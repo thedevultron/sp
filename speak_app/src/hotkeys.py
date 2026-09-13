@@ -11,13 +11,14 @@ class GlobalHotkeyListener(QObject):
     sig_toggle_dictation = Signal()  # Ctrl + Space
     sig_toggle_companion = Signal()  # Win + Shift
     sig_purge_reset = Signal()       # Ctrl + Win
+    sig_new_session = Signal()       # Ctrl + Tab — spawn + switch live session
 
     def __init__(self):
         super().__init__()
         self._listener = None
         self._pressed = set()
         self._is_running = False
-        self._last_emit = {"dictation": 0, "companion": 0, "purge": 0}
+        self._last_emit = {"dictation": 0, "companion": 0, "purge": 0, "new_session": 0}
         self._debounce_ms = 600  # prevent double-fire when holding keys
 
     def start(self):
@@ -65,6 +66,10 @@ class GlobalHotkeyListener(QObject):
                 return "SHIFT"
             if key == keyboard.Key.space:
                 return "SPACE"
+            if key == keyboard.Key.tab:
+                return "TAB"
+            if key == keyboard.Key.esc:
+                return "ESC"
             # For char keys, normalize case
             if hasattr(key, 'char') and key.char:
                 return key.char.lower()
@@ -85,32 +90,62 @@ class GlobalHotkeyListener(QObject):
         return True
 
     def _on_press(self, key):
-        norm = self._normalize(key)
-        self._pressed.add(norm)
+        try:
+            norm = self._normalize(key)
+        except Exception:
+            return
+        try:
+            self._pressed.add(norm)
+        except Exception:
+            return
+
+        # Ctrl + Tab = NEW live session (spawn + switch). Tab alone is still
+        # focus navigation and is ignored; only the explicit Ctrl+Tab chord fires.
+        try:
+            if "CTRL" in self._pressed and "TAB" in self._pressed and "SPACE" not in self._pressed:
+                if self._should_emit("new_session"):
+                    print("[Hotkeys] Ctrl+Tab -> new session")
+                    try:
+                        self.sig_new_session.emit()
+                    except Exception as e:
+                        print(f"[Hotkeys] emit new_session failed: {e}")
+                    self._pressed.discard("TAB")
+                return
+        except Exception:
+            pass
 
         # Use set checks; ensure we don't emit spuriously on key repeat
         # 1. Ctrl + Space (Dictation) - highest priority
         if "CTRL" in self._pressed and "SPACE" in self._pressed:
             if self._should_emit("dictation"):
                 print("[Hotkeys] Ctrl+Space -> dictation")
-                self.sig_toggle_dictation.emit()
+                try:
+                    self.sig_toggle_dictation.emit()
+                except Exception as e:
+                    print(f"[Hotkeys] emit dictation failed: {e}")
                 # Clear to prevent repeat firing while holding
                 self._pressed.discard("SPACE")
             return
 
-        # 2. Win + Shift (Companion)
-        if "WIN" in self._pressed and "SHIFT" in self._pressed:
+        # 2. Win + Shift (Companion) — only without Ctrl (avoids Ctrl+Win purge misfire)
+        if "WIN" in self._pressed and "SHIFT" in self._pressed and "CTRL" not in self._pressed:
             if self._should_emit("companion"):
                 print("[Hotkeys] Win+Shift -> companion")
-                self.sig_toggle_companion.emit()
+                try:
+                    self.sig_toggle_companion.emit()
+                except Exception as e:
+                    print(f"[Hotkeys] emit companion failed: {e}")
                 self._pressed.discard("SHIFT")
             return
 
-        # 3. Ctrl + Win (Purge & Reset)
-        if "CTRL" in self._pressed and "WIN" in self._pressed:
+        # 3. Ctrl + Win (Purge & Reset) — only without Shift (avoids Win+Shift misfire)
+        if "CTRL" in self._pressed and "WIN" in self._pressed and "SHIFT" not in self._pressed:
             if self._should_emit("purge"):
                 print("[Hotkeys] Ctrl+Win -> purge")
-                self.sig_purge_reset.emit()
+                try:
+                    self.sig_purge_reset.emit()
+                except Exception as e:
+                    print(f"[Hotkeys] emit purge failed: {e}")
                 # Don't discard WIN immediately: Win key sticky on Windows
             return
 
@@ -128,5 +163,7 @@ class GlobalHotkeyListener(QObject):
                 self._pressed.discard("SHIFT")
             elif norm == "SPACE":
                 self._pressed.discard("SPACE")
+            elif norm == "TAB":
+                self._pressed.discard("TAB")
         except Exception:
             pass

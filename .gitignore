@@ -1,0 +1,12 @@
+speak_app/venv/
+speak_app/__pycache__/
+speak_app/src/__pycache__/
+speak_app/src/ui/__pycache__/
+speak_app/build/
+speak_app/dist/
+speak_app/installer/*.exe
+*.pyc
+.env
+cert.pfx
+amri.pfx
+*.pfx

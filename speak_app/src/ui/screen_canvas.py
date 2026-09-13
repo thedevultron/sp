@@ -22,8 +22,9 @@ class ScreenCanvasOverlay(QWidget):
 
         self._strokes = []
         self._current_path = None
-        self._pen_color = QColor("#DA7756")
-        self._pen_width = 4
+        # Authkit: default Blueprint Blue (monochrome), Ember for alt, Frost for light
+        self._pen_color = QColor("#B6D9FC")
+        self._pen_width = 3
         self._is_drawing = False
 
     def show_canvas(self):
@@ -66,15 +67,15 @@ class ScreenCanvasOverlay(QWidget):
             event.accept()
             return
         elif event.key() == Qt.Key.Key_1:
-            self._pen_color = QColor("#DA7756")  # Terracotta
+            self._pen_color = QColor("#B6D9FC")  # Blueprint Blue
             event.accept()
             return
         elif event.key() == Qt.Key.Key_2:
-            self._pen_color = QColor("#D97706")  # Amber
+            self._pen_color = QColor("#E46D4C")  # Ember Glow (Authkit secondary)
             event.accept()
             return
         elif event.key() == Qt.Key.Key_3:
-            self._pen_color = QColor("#F3F3EE")  # Clean White
+            self._pen_color = QColor("#D1E4FA")  # Frost Glow
             event.accept()
             return
         elif event.key() == Qt.Key.Key_C and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -119,16 +120,16 @@ class ScreenCanvasOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         # Dim background slightly to indicate drawing mode
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 18))
+        painter.fillRect(self.rect(), QColor(5, 6, 15, 46))
 
         for path, col, w in self._strokes:
             pen = QPen(col, w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
             painter.setPen(pen)
             painter.drawPath(path)
 
-        # Hint text when empty
+        # Hint text when empty — Authkit frost
         if not self._strokes:
-            painter.setPen(QColor(255, 255, 255, 90))
+            painter.setPen(QColor(199, 211, 234, 140))
             painter.drawText(self.rect().adjusted(20, 20, -20, -20),
                              Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
-                             "Drawing Mode  •  Draw with mouse  •  Esc to clear & exit  •  1/2/3 colors  •  Right-click to clear")
+                             "Draw \u2022 Esc to exit \u2022 1 Blueprint  2 Ember  3 Frost \u2022 Right-click clear")
