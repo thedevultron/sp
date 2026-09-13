@@ -1,0 +1,19 @@
+:root {
+  --color-midnight-canvas: #05060f;
+  --color-steel-plate: #2f343e;
+  --surface-frosted-glass: rgba(186, 214, 247, 0.03);
+  --surface-deep-glass: rgba(5, 6, 15, 0.95);
+  --color-fog-veil: #9da7ba;
+  --color-moon-mist: #c7d3ea;
+  --color-frost-glow: #d1e4fa;
+  --gradient-ice-highlight: linear-gradient(0deg, #d8ecf8 0%, #98c0ef 100%);
+  --color-pure-white: #ffffff;
+  --color-void-violet: #663af3;
+  --color-blueprint-blue: #b6d9fc;
+  --color-glass-edge: rgba(186, 215, 247, 0.12);
+  --color-green: #22c55e;
+  --color-amber: #f59e0b;
+  --color-red: #ef4444;
+  --shadow-glass: inset 0 1px 1px rgba(199, 211, 234, 0.12), inset 0 24px 48px rgba(199, 211, 234, 0.05), 0 24px 32px rgba(6, 6, 14, 0.7);
+  --shadow-widget: inset 0 1px 1px rgba(216, 236, 248, 0.2), inset 0 24px 48px rgba(168, 216, 245, 0.06), 0 16px 32px rgba(0, 0, 0, 0.6);
+}
