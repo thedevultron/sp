@@ -10,3 +10,4 @@ speak_app/installer/*.exe
 cert.pfx
 amri.pfx
 *.pfx
+speak_website/public/*.exeS
