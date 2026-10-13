@@ -72,7 +72,7 @@ class SpeakSystemTray(QObject):
         act("Show / Hide capsule", "monitor", lambda: self.toggle_capsule_requested.emit())
         menu.addSeparator()
         act("Dictation  (Ctrl + Space)", "mic", lambda: self.dictation_requested.emit())
-        act("Companion  (Win + Shift)", "monitor", lambda: self.companion_requested.emit())
+        act("Companion  (Ctrl + /)", "monitor", lambda: self.companion_requested.emit())
         act("Purge  (Ctrl + Win)", "layers", lambda: self.purge_requested.emit())
 
         menu_refine = menu.addMenu("Refine")

@@ -98,6 +98,106 @@ class SoundWavePillWidget(QWidget):
             painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 1.5, 1.5)
 
 
+class MiniLiveWaveWidget(QWidget):
+    """Mini-capsule live wave — 7 vertical lines, centre-anchored.
+
+    Speaks = bars extend up/down from centre. Silent = gentle idle.
+    Click = expand to full capsule. No text, icon-only aesthetic.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, parent=None, bars: int = 7):
+        super().__init__(parent)
+        self._bars = max(5, min(9, bars))
+        self.setFixedSize(74, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Live audio — click to expand")
+        self.setAccessibleName("Live audio level, click to expand")
+        self._target_amps = [0.14] * self._bars
+        self._current_amps = [0.14] * self._bars
+        self._is_gemini_active = False
+        # Symmetric spread so middle bar peaks highest
+        mid = (self._bars - 1) / 2.0
+        self._spread_mic = [max(0.45, 1.35 - abs(i - mid) * 0.28) for i in range(self._bars)]
+        self._spread_gem = [max(0.55, 1.5 - abs(i - mid) * 0.26) for i in range(self._bars)]
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start()
+
+    def set_mic_rms(self, norm_rms: float):
+        try:
+            self._is_gemini_active = False
+            for i in range(self._bars):
+                self._target_amps[i] = max(0.12, min(1.0, float(norm_rms) * self._spread_mic[i]))
+        except Exception:
+            pass
+
+    def set_gemini_rms(self, norm_rms: float):
+        try:
+            self._is_gemini_active = True
+            for i in range(self._bars):
+                self._target_amps[i] = max(0.14, min(1.0, float(norm_rms) * self._spread_gem[i]))
+        except Exception:
+            pass
+
+    def _animate(self):
+        try:
+            factor = 0.28
+            changed = False
+            for i in range(self._bars):
+                diff = self._target_amps[i] - self._current_amps[i]
+                if abs(diff) > 0.001:
+                    self._current_amps[i] += diff * factor
+                    changed = True
+            if not changed and max(self._current_amps) < 0.16:
+                import math as _m
+                t = time.time() * 2.1
+                for i in range(self._bars):
+                    self._current_amps[i] = 0.13 + 0.02 * (0.5 + 0.5 * _m.sin(t + i * 0.9))
+                self.update()
+            elif changed:
+                self.update()
+            for i in range(self._bars):
+                self._target_amps[i] = max(0.11, self._target_amps[i] * 0.982)
+        except Exception:
+            pass
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        bar_w = 2.6
+        spacing = 3.0
+        total_w = self._bars * bar_w + (self._bars - 1) * spacing
+        start_x = (w - total_w) / 2
+        if self._is_gemini_active:
+            c1, c2 = QColor("#D8ECF8"), QColor("#98C0EF")
+        else:
+            c1, c2 = QColor("#D1E4FA"), QColor("#9DA7BA")
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, c1)
+        grad.setColorAt(1.0, c2)
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(self._bars):
+            x = start_x + i * (bar_w + spacing)
+            bar_h = max(3.0, self._current_amps[i] * (h - 3))
+            y = (h - bar_h) / 2
+            painter.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 1.3, 1.3)
+
+    def mousePressEvent(self, event):
+        try:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.clicked.emit()
+                event.accept()
+                return
+        except Exception:
+            pass
+        super().mousePressEvent(event)
+
+
 class HoverTokenBar(QProgressBar):
     """Authkit 3px token bar — semantic green/amber/red kept (functional), track midnight."""
 
@@ -108,7 +208,7 @@ class HoverTokenBar(QProgressBar):
         self.setRange(0, 100)
         self.setValue(0)
         self._tokens = 0
-        self._max_tokens = 128000
+        self._max_tokens = 131072  # gemini-3.8-live input window (updated live via set_tokens)
         self._start_time = time.time()
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -232,28 +332,96 @@ class CapsuleIconButton(QPushButton):
         """
 
 
+class MiniIconButton(QPushButton):
+    """Icon-only 28x28 quick-action for the minimised capsule. Tooltip on hover."""
+
+    def __init__(self, icon_name: str, tooltip: str, parent=None, danger: bool = False, checkable: bool = False):
+        super().__init__(parent)
+        self._danger = danger
+        self._icon_name = icon_name
+        col = "#F0A08A" if danger else "#C7D3EA"
+        self.setIcon(lucide_icon(icon_name, size=14, color=col))
+        self.setIconSize(QSize(14, 14))
+        self.setText("")
+        self.setToolTip(tooltip)
+        self.setAccessibleName(tooltip)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(28, 28)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        if checkable:
+            self.setCheckable(True)
+        self.setStyleSheet(self._style())
+
+    def set_lucide_icon(self, icon_name: str, color: str = "#C7D3EA", size: int = 14):
+        try:
+            self._icon_name = icon_name
+            self.setIcon(lucide_icon(icon_name, size=size, color=color))
+        except Exception:
+            pass
+
+    def _style(self) -> str:
+        if self._danger:
+            return """
+                QPushButton {
+                    background-color: #14E46D4C;
+                    border: 1px solid #33E46D4C;
+                    border-radius: 14px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #22E46D4C;
+                    border: 1px solid #55E46D4C;
+                }
+                QPushButton:pressed { background-color: #33E46D4C; }
+            """
+        return """
+            QPushButton {
+                background-color: #14BAD6F7;
+                border: 1px solid #1FBAD7F7;
+                border-radius: 14px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #1FBAD6F7;
+                border: 1px solid #33BAD7F7;
+            }
+            QPushButton:pressed { background-color: #0ABAD6F7; }
+            QPushButton:checked {
+                background-color: #1FBAD6F7;
+                border: 1px solid #33BAD7F7;
+            }
+        """
+
+
 class TitleBarButton(QPushButton):
-    """Small 28x28 close-only chrome for the frameless capsule.
-    Authkit: small windows keep close only (no min/max).
-    kind is kept for API compat but only 'close' is used.
-    """
+    """Small 28x28 frameless chrome — close / minimise / maximise."""
 
     def __init__(self, kind: str = "close", parent=None):
         super().__init__(parent)
-        self._kind = "close"
+        k = str(kind or "close").lower()
+        if k not in ("close", "minimize", "minimise", "maximize"):
+            k = "close"
+        # Normalise British spelling
+        if k == "minimise":
+            k = "minimize"
+        self._kind = k
         self.setFixedSize(28, 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._icon_name = "x"
-        self._icon_color = "#C7D3EA"
+        meta = {
+            "close": ("x", "#C7D3EA", "Close \u2014 stop session and hide to tray"),
+            "minimize": ("minus", "#C7D3EA", "Minimise to mini capsule"),
+            "maximize": ("maximize-2", "#C7D3EA", "Expand to full capsule"),
+        }
+        self._icon_name, self._icon_color, tip = meta[self._kind]
         self.setIcon(lucide_icon(self._icon_name, size=13, color=self._icon_color))
         self.setIconSize(QSize(13, 13))
-        self.setToolTip("Close \u2014 stop session and hide to tray")
-        self.setAccessibleName("Close \u2014 stop session and hide to tray")
+        self.setToolTip(tip)
+        self.setAccessibleName(tip)
         self.setStyleSheet(self._style())
 
     def set_maximized_state(self, maximized: bool):
-        # Close-only: no maximize icon to swap (kept as no-op for compat).
+        # Kept for API compat — titlebar minimise/maximise are separate buttons now.
         return
 
     def _style(self) -> str:
@@ -285,6 +453,7 @@ class FloatingCapsuleWidget(QWidget):
     # Emitted after expand/collapse/resize so main.py can keep the
     # capsule fully inside availableGeometry (never under taskbar).
     sig_geometry_changed = Signal()
+    sig_mini_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -307,7 +476,10 @@ class FloatingCapsuleWidget(QWidget):
         self._resizing = False
         self._resize_start = QPoint()
         self._resize_size = QSize()
-        # Close-only: no maximize state (kept attrs for compat, always False/None)
+        # Minimised-capsule state
+        self._is_mini = False
+        self._normal_size = QSize(720, 118)
+        self._was_sheet_expanded = False
         self._is_maximized = False
         self._normal_geo = None
         self._last_status = ("Ready", "idle")
@@ -317,11 +489,9 @@ class FloatingCapsuleWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(5)
+        self._root = root
 
-        # ---- Custom title bar: drag handle + close ONLY ----
-        # Authkit: small windows keep close only. Frameless Tool has no native
-        # chrome, so we provide a single 28px close button (accessible, tooltipped).
-        # Drag is titlebar-only (see eventFilter) so buttons/inputs never start a move.
+        # ---- Custom title bar: drag handle + minimise + close ----
         self.titlebar = QWidget(self)
         self.titlebar.setObjectName("CapsuleTitleBar")
         self.titlebar.setFixedHeight(30)
@@ -338,6 +508,9 @@ class FloatingCapsuleWidget(QWidget):
         self.title_label.setStyleSheet("color: #9DA7BA; font-size: 11px; font-weight: 500; background: transparent;")
         self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         tb.addWidget(self.title_label, 1)
+        self.btn_min = TitleBarButton("minimize", self.titlebar)
+        self.btn_min.clicked.connect(self.minimize_to_mini)
+        tb.addWidget(self.btn_min)
         self.btn_x = TitleBarButton("close", self.titlebar)
         self.btn_x.clicked.connect(self._on_chrome_close)
         tb.addWidget(self.btn_x)
@@ -406,12 +579,13 @@ class FloatingCapsuleWidget(QWidget):
         self.token_bar = HoverTokenBar(self)
         root.addWidget(self.token_bar)
 
-        # Inline controls row — compact, transcript toggle next to arrow+screen to save space
-        ctrl = QHBoxLayout()
+        # Inline controls row — compact, wrapped in a widget so mini-mode can hide it
+        self.ctrl_row = QWidget(self)
+        ctrl = QHBoxLayout(self.ctrl_row)
         ctrl.setContentsMargins(4, 0, 4, 0)
         ctrl.setSpacing(6)
         # Group: Transcript arrow + Screen toggle side-by-side to save vertical space
-        self.btn_transcript_toggle = QPushButton("Transcript", self)
+        self.btn_transcript_toggle = QPushButton("Transcript", self.ctrl_row)
         self.btn_transcript_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_transcript_toggle.setIcon(lucide_icon("chevron-down", size=13, color="#C7D3EA"))
         self.btn_transcript_toggle.setIconSize(QSize(13,13))
@@ -437,7 +611,7 @@ class FloatingCapsuleWidget(QWidget):
         ctrl.addWidget(self.btn_transcript_toggle)
 
         # Screen toggle (live-screen) — Authkit frost, blueprint icon when ON
-        self.btn_screen = QPushButton(self)
+        self.btn_screen = QPushButton(self.ctrl_row)
         self.btn_screen.setIcon(lucide_icon("monitor", size=13, color="#9DA7BA"))
         self.btn_screen.setIconSize(QSize(13,13))
         self.btn_screen.setFixedSize(32, 28)
@@ -454,7 +628,7 @@ class FloatingCapsuleWidget(QWidget):
         self.btn_screen.toggled.connect(self._on_screen_toggled)
         ctrl.addWidget(self.btn_screen)
 
-        self.lbl_interim_inline = QLabel("", self)
+        self.lbl_interim_inline = QLabel("", self.ctrl_row)
         self.lbl_interim_inline.setStyleSheet("color: #9DA7BA; font-size: 11px; background: transparent;")
         self.lbl_interim_inline.setVisible(False)
         self.lbl_interim_inline.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -462,8 +636,7 @@ class FloatingCapsuleWidget(QWidget):
         ctrl.addWidget(self.lbl_interim_inline, 1)
 
         ctrl.addStretch()
-
-        root.addLayout(ctrl)
+        root.addWidget(self.ctrl_row)
 
         # Sheet — Authkit glass card 16px (transcript panel)
         self.sheet = QFrame(self)
@@ -536,13 +709,294 @@ class FloatingCapsuleWidget(QWidget):
         self.sheet.setVisible(False)
 
         # Size grip for sizable behavior (bottom-right)
-        grip_row = QHBoxLayout()
-        grip_row.addStretch()
-        self.size_grip = QSizeGrip(self)
+        self.grip_row = QWidget(self)
+        grip_layout = QHBoxLayout(self.grip_row)
+        grip_layout.setContentsMargins(0, 0, 0, 0)
+        grip_layout.addStretch()
+        self.size_grip = QSizeGrip(self.grip_row)
         self.size_grip.setStyleSheet("QSizeGrip { width: 12px; height: 12px; background: transparent; }")
-        # Make grip subtle — override paint
-        grip_row.addWidget(self.size_grip)
-        root.addLayout(grip_row)
+        grip_layout.addWidget(self.size_grip)
+        root.addWidget(self.grip_row)
+
+        # ---- Mini capsule bar: icon-only, no words, live wave in the middle ----
+        self.mini_bar = QWidget(self)
+        self.mini_bar.setObjectName("MiniCapsuleBar")
+        self.mini_bar.setCursor(Qt.CursorShape.OpenHandCursor)
+        ml = QHBoxLayout(self.mini_bar)
+        ml.setContentsMargins(8, 6, 8, 6)
+        ml.setSpacing(6)
+        self.mini_dot = QLabel("\u25CF", self.mini_bar)
+        self.mini_dot.setStyleSheet("color: #B6D9FC; font-size: 7px; background: transparent;")
+        self.mini_dot.setFixedWidth(8)
+        self.mini_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mini_dot.setToolTip("Drag to move")
+        ml.addWidget(self.mini_dot)
+        self.mini_wave = MiniLiveWaveWidget(self.mini_bar)
+        self.mini_wave.clicked.connect(self.expand_to_full)
+        ml.addWidget(self.mini_wave)
+        mini_sep = QFrame(self.mini_bar)
+        mini_sep.setFrameShape(QFrame.Shape.VLine)
+        mini_sep.setStyleSheet("background: #1FBAD7F7; border: none;")
+        mini_sep.setFixedWidth(1)
+        mini_sep.setFixedHeight(20)
+        ml.addWidget(mini_sep)
+        self.btn_mini_transcript = MiniIconButton("chevron-down", "Transcript \u2014 expand and show transcript", parent=self.mini_bar)
+        self.btn_mini_transcript.clicked.connect(self._on_mini_transcript)
+        ml.addWidget(self.btn_mini_transcript)
+        self.btn_mini_screen = MiniIconButton("eye-off", "Live screen share: OFF \u2014 voice only", parent=self.mini_bar, checkable=True)
+        self.btn_mini_screen.toggled.connect(self._on_mini_screen_toggled)
+        ml.addWidget(self.btn_mini_screen)
+        self.btn_mini_settings = MiniIconButton("settings", "Open settings", parent=self.mini_bar)
+        self.btn_mini_settings.clicked.connect(self.sig_open_settings.emit)
+        ml.addWidget(self.btn_mini_settings)
+        self.btn_mini_max = MiniIconButton("maximize-2", "Expand to full capsule", parent=self.mini_bar)
+        self.btn_mini_max.clicked.connect(self.expand_to_full)
+        ml.addWidget(self.btn_mini_max)
+        self.btn_mini_close = MiniIconButton("x", "Stop session and hide to tray", parent=self.mini_bar, danger=True)
+        self.btn_mini_close.clicked.connect(self._on_close_clicked)
+        ml.addWidget(self.btn_mini_close)
+        root.addWidget(self.mini_bar)
+        self.mini_bar.setVisible(False)
+        try:
+            self.mini_bar.installEventFilter(self)
+            self.mini_dot.installEventFilter(self)
+            self.mini_wave.installEventFilter(self)
+        except Exception:
+            pass
+        self._wire_mini_audio()
+
+    def _wire_mini_audio(self):
+        """Mirror mic/gemini RMS into the mini wave so both animate together."""
+        try:
+            if getattr(self, "_mini_audio_wired", False):
+                return
+            full = self.wave_visualizer
+            mini = self.mini_wave
+            orig_mic = full.set_mic_rms
+            orig_gem = full.set_gemini_rms
+
+            def _mic_both(v):
+                try:
+                    orig_mic(v)
+                except Exception:
+                    pass
+                try:
+                    mini.set_mic_rms(v)
+                except Exception:
+                    pass
+
+            def _gem_both(v):
+                try:
+                    orig_gem(v)
+                except Exception:
+                    pass
+                try:
+                    mini.set_gemini_rms(v)
+                except Exception:
+                    pass
+
+            full.set_mic_rms = _mic_both  # type: ignore
+            full.set_gemini_rms = _gem_both  # type: ignore
+            self._mini_audio_wired = True
+        except Exception:
+            pass
+
+    def set_mic_rms(self, v: float):
+        """Proxy so external callers can drive both waves at once."""
+        try:
+            self.wave_visualizer.set_mic_rms(v)
+        except Exception:
+            pass
+
+    def set_gemini_rms(self, v: float):
+        try:
+            self.wave_visualizer.set_gemini_rms(v)
+        except Exception:
+            pass
+
+    # ---- Minimise / maximise ----
+    def is_minimized(self) -> bool:
+        return bool(getattr(self, "_is_mini", False))
+
+    def minimize_to_mini(self):
+        if self._is_mini:
+            return
+        try:
+            self._was_sheet_expanded = bool(self._expanded and self.sheet.isVisible())
+        except Exception:
+            self._was_sheet_expanded = False
+        try:
+            self._normal_size = self.size()
+        except Exception:
+            pass
+        self._is_mini = True
+        # Hide full chrome
+        for w in (self.titlebar, self.pill, self.token_bar, self.ctrl_row, self.sheet, self.grip_row):
+            try:
+                w.setVisible(False)
+            except Exception:
+                pass
+        try:
+            self._sync_mini_icons()
+        except Exception:
+            pass
+        self.mini_bar.setVisible(True)
+        # Tight capsule constraints — small pill, no resize
+        try:
+            self.setMinimumWidth(284)
+            self.setMinimumHeight(48)
+            self.setMaximumWidth(400)
+            self.setMaximumHeight(56)
+        except Exception:
+            pass
+        try:
+            self.resize(330, 52)
+            self.updateGeometry()
+            self.adjustSize()
+        except Exception:
+            pass
+        try:
+            self._clamp_inside_screen()
+        except Exception:
+            pass
+        try:
+            self.sig_geometry_changed.emit()
+            self.sig_mini_toggled.emit(True)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def expand_to_full(self):
+        if not self._is_mini:
+            return
+        self._is_mini = False
+        try:
+            self.mini_bar.setVisible(False)
+        except Exception:
+            pass
+        for w in (self.titlebar, self.pill, self.token_bar, self.ctrl_row, self.grip_row):
+            try:
+                w.setVisible(True)
+            except Exception:
+                pass
+        # Restore full constraints
+        try:
+            self.setMinimumWidth(680)
+            self.setMinimumHeight(112)
+            self.setMaximumWidth(860)
+            self.setMaximumHeight(16777215)
+        except Exception:
+            pass
+        # Restore sheet state
+        try:
+            want_sheet = bool(getattr(self, "_was_sheet_expanded", False))
+            self._expanded = want_sheet
+            self.sheet.setVisible(want_sheet)
+            ico = "chevron-up" if want_sheet else "chevron-down"
+            self.btn_transcript_toggle.setIcon(lucide_icon(ico, size=13, color="#C7D3EA"))
+        except Exception:
+            pass
+        try:
+            nw = self._normal_size if isinstance(getattr(self, "_normal_size", None), QSize) else QSize(720, 118)
+            if not self._was_sheet_expanded:
+                self.resize(max(680, min(860, nw.width())), 118)
+            else:
+                self.resize(max(680, min(860, nw.width())), max(nw.height(), 300))
+            self.updateGeometry()
+            self.adjustSize()
+        except Exception:
+            try:
+                self.resize(720, 118)
+            except Exception:
+                pass
+        try:
+            self._clamp_inside_screen()
+        except Exception:
+            pass
+        try:
+            self._refresh_status_elision()
+        except Exception:
+            pass
+        try:
+            self.sig_geometry_changed.emit()
+            self.sig_mini_toggled.emit(False)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def toggle_mini(self):
+        if self._is_mini:
+            self.expand_to_full()
+        else:
+            self.minimize_to_mini()
+
+    def _sync_mini_icons(self):
+        try:
+            on = bool(self.btn_screen.isChecked()) if hasattr(self, "btn_screen") else False
+            self.btn_mini_screen.blockSignals(True)
+            self.btn_mini_screen.setChecked(on)
+            self.btn_mini_screen.set_lucide_icon("monitor" if on else "eye-off", "#D8ECF8" if on else "#9DA7BA")
+            self.btn_mini_screen.setToolTip("Live screen share: ON" if on else "Live screen share: OFF \u2014 voice only")
+            self.btn_mini_screen.setAccessibleName(self.btn_mini_screen.toolTip())
+            self.btn_mini_screen.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            exp = bool(getattr(self, "_expanded", False))
+            self.btn_mini_transcript.set_lucide_icon("chevron-up" if exp else "chevron-down", "#C7D3EA")
+        except Exception:
+            pass
+
+    def _on_mini_transcript(self):
+        try:
+            was_mini = self._is_mini
+            if was_mini:
+                self._was_sheet_expanded = True
+                self._expanded = True
+                self.expand_to_full()
+                # Ensure sheet ends up open
+                if not self.sheet.isVisible():
+                    self._expanded = False
+                    self.toggle_sheet()
+                else:
+                    self.btn_transcript_toggle.setIcon(lucide_icon("chevron-up", size=13, color="#C7D3EA"))
+                    try:
+                        self._sync_mini_icons()
+                    except Exception:
+                        pass
+            else:
+                self.toggle_sheet()
+        except Exception:
+            try:
+                self.toggle_sheet()
+            except Exception:
+                pass
+
+    def _on_mini_screen_toggled(self, checked: bool):
+        try:
+            self.btn_mini_screen.set_lucide_icon("monitor" if checked else "eye-off", "#D8ECF8" if checked else "#9DA7BA")
+            self.btn_mini_screen.setToolTip("Live screen share: ON" if checked else "Live screen share: OFF \u2014 voice only")
+        except Exception:
+            pass
+        # Mirror into full toggle (emits once) then re-sync
+        try:
+            self.btn_screen.blockSignals(True)
+            self.btn_screen.setChecked(bool(checked))
+            self.btn_screen.setIcon(lucide_icon("monitor" if checked else "eye-off", size=13, color="#D8ECF8" if checked else "#9DA7BA"))
+            self.btn_screen.setToolTip("Live screen share: ON" if checked else "Live screen share: OFF \u2014 voice only")
+            self.btn_screen.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            self.sig_toggle_screen.emit()
+        except Exception:
+            pass
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -611,6 +1065,14 @@ class FloatingCapsuleWidget(QWidget):
         self.lbl_hint.setStyleSheet(f"color: {dot if badge_type!='idle' else '#9DA7BA'}; font-size: 10px; font-weight: 500; background: transparent;")
         self.status_dot.setStyleSheet(f"color: {dot}; font-size: 9px; background: transparent;")
         self.title_dot.setStyleSheet(f"color: {dot}; font-size: 8px; background: transparent;")
+        # Mini: no words — dot colour + wave tooltip carry the status
+        try:
+            if hasattr(self, "mini_dot"):
+                self.mini_dot.setStyleSheet(f"color: {dot}; font-size: 7px; background: transparent;")
+            if hasattr(self, "mini_wave"):
+                self.mini_wave.setToolTip(f"{text} \u2014 click to expand")
+        except Exception:
+            pass
         self.update()
 
     def set_transcript(self, text: str):
@@ -781,12 +1243,21 @@ class FloatingCapsuleWidget(QWidget):
             self.btn_clear.setEnabled(True)
 
     def toggle_sheet(self):
+        # In mini mode the sheet lives in full view — expand first.
+        if getattr(self, "_is_mini", False):
+            self._on_mini_transcript()
+            return
         self._expanded = not self._expanded
         self.sheet.setVisible(self._expanded)
         # Keep label always "Transcript" — only icon flips, avoids duplicate "Hide" with capsule hide button
         ico_name = "chevron-up" if self._expanded else "chevron-down"
         self.btn_transcript_toggle.setIcon(lucide_icon(ico_name, size=12, color="#C7D3EA"))
         self.btn_transcript_toggle.setText("Transcript")
+        try:
+            if hasattr(self, "btn_mini_transcript"):
+                self.btn_mini_transcript.set_lucide_icon(ico_name, "#C7D3EA")
+        except Exception:
+            pass
         # FIX (vertical cutoff): grow/shrink then lift the window so the
         # sheet never extends underneath the taskbar. adjustSize() alone
         # grows downward — we compensate by moving up by the delta.
@@ -843,15 +1314,12 @@ class FloatingCapsuleWidget(QWidget):
         except Exception:
             pass
 
-    # ---- Window chrome: close-only (no min/max on small windows) ----
-    # Compat stubs: old callers expect these; they are intentional no-ops now.
+    # ---- Window chrome ----
     def show_minimized(self):
-        # Close-only capsule: minimize removed — hide to tray instead is via close.
-        return
+        self.minimize_to_mini()
 
     def toggle_maximize(self):
-        # Close-only capsule: maximize removed — no-op (double-click does nothing).
-        return
+        self.toggle_mini()
 
     def _on_chrome_close(self):
         # Same semantics as Hide: stop session, hide to tray (app keeps running).
@@ -868,21 +1336,43 @@ class FloatingCapsuleWidget(QWidget):
         super().resizeEvent(event)
         # Re-elide status on every resize so text never looks half-cut.
         try:
-            self._refresh_status_elision()
+            if not getattr(self, "_is_mini", False):
+                self._refresh_status_elision()
         except Exception:
             pass
 
     def set_screen_enabled(self, enabled: bool):
         # Sync live-screen toggle without emitting (Authkit frost/blueprint, no violet)
-        self.btn_screen.blockSignals(True)
-        self.btn_screen.setChecked(enabled)
-        self.btn_screen.setIcon(lucide_icon("monitor" if enabled else "eye-off", size=12, color="#D8ECF8" if enabled else "#9DA7BA"))
-        self.btn_screen.setToolTip("Live screen share: ON" if enabled else "Live screen share: OFF — voice only")
-        self.btn_screen.blockSignals(False)
+        try:
+            self.btn_screen.blockSignals(True)
+            self.btn_screen.setChecked(enabled)
+            self.btn_screen.setIcon(lucide_icon("monitor" if enabled else "eye-off", size=12, color="#D8ECF8" if enabled else "#9DA7BA"))
+            self.btn_screen.setToolTip("Live screen share: ON" if enabled else "Live screen share: OFF — voice only")
+            self.btn_screen.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "btn_mini_screen"):
+                self.btn_mini_screen.blockSignals(True)
+                self.btn_mini_screen.setChecked(bool(enabled))
+                self.btn_mini_screen.set_lucide_icon("monitor" if enabled else "eye-off", "#D8ECF8" if enabled else "#9DA7BA")
+                self.btn_mini_screen.setToolTip("Live screen share: ON" if enabled else "Live screen share: OFF — voice only")
+                self.btn_mini_screen.blockSignals(False)
+        except Exception:
+            pass
 
     def _on_screen_toggled(self, checked: bool):
         self.btn_screen.setIcon(lucide_icon("monitor" if checked else "eye-off", size=12, color="#D8ECF8" if checked else "#9DA7BA"))
         self.btn_screen.setToolTip("Live screen share: ON" if checked else "Live screen share: OFF — voice only")
+        try:
+            if hasattr(self, "btn_mini_screen"):
+                self.btn_mini_screen.blockSignals(True)
+                self.btn_mini_screen.setChecked(bool(checked))
+                self.btn_mini_screen.set_lucide_icon("monitor" if checked else "eye-off", "#D8ECF8" if checked else "#9DA7BA")
+                self.btn_mini_screen.setToolTip("Live screen share: ON" if checked else "Live screen share: OFF — voice only")
+                self.btn_mini_screen.blockSignals(False)
+        except Exception:
+            pass
         self.sig_toggle_screen.emit()
 
     def _on_copy(self):
@@ -898,12 +1388,15 @@ class FloatingCapsuleWidget(QWidget):
     def _on_close_clicked(self):
         self._on_chrome_close()
 
-    # ---- Drag: titlebar-only (close-only capsule) + edge resize ----
+    # ---- Drag: titlebar-only + mini-bar + edge resize ----
     # Production rule: NEVER start a drag from buttons, inputs, sheet, or pill.
     # Titlebar drag is handled via eventFilter (covers titlebar + its labels).
-    # mousePress/Move here only handles the bottom-right resize zone.
+    # Mini-bar drag covers mini background/dot/wave container (buttons excluded).
+    # mousePress/Move here only handles the bottom-right resize zone (full mode).
     def _in_resize_zone(self, pos) -> bool:
         try:
+            if getattr(self, "_is_mini", False):
+                return False
             return pos.x() >= self.width() - 16 and pos.y() >= self.height() - 16
         except Exception:
             return False
@@ -944,6 +1437,33 @@ class FloatingCapsuleWidget(QWidget):
                             pass
                         event.accept()
                         return True
+            # Mini-bar drag: background + dot drag the tiny capsule (buttons/wave handle their own clicks)
+            if watched in (getattr(self, "mini_bar", None), getattr(self, "mini_dot", None)):
+                et = event.type()
+                if et == QEvent.Type.MouseButtonPress:
+                    if event.button() == Qt.MouseButton.LeftButton:
+                        self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                        self._drag_active = True
+                        try:
+                            self.mini_bar.setCursor(Qt.CursorShape.ClosedHandCursor)
+                        except Exception:
+                            pass
+                        event.accept()
+                        return True
+                elif et == QEvent.Type.MouseMove:
+                    if self._drag_active and (event.buttons() & Qt.MouseButton.LeftButton):
+                        self.move(event.globalPosition().toPoint() - self._drag_pos)
+                        event.accept()
+                        return True
+                elif et == QEvent.Type.MouseButtonRelease:
+                    if self._drag_active:
+                        self._drag_active = False
+                        try:
+                            self.mini_bar.setCursor(Qt.CursorShape.OpenHandCursor)
+                        except Exception:
+                            pass
+                        event.accept()
+                        return True
         except Exception:
             pass
         return super().eventFilter(watched, event)
@@ -960,9 +1480,10 @@ class FloatingCapsuleWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        # Close-only: double-click titlebar does nothing (no maximize).
+        # Double-click titlebar minimises; double-click mini expands.
         try:
             if self._in_titlebar(event.position()):
+                self.minimize_to_mini()
                 event.accept()
                 return
         except Exception:
@@ -991,6 +1512,11 @@ class FloatingCapsuleWidget(QWidget):
         self._resizing = False
         try:
             self.titlebar.setCursor(Qt.CursorShape.OpenHandCursor)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "mini_bar"):
+                self.mini_bar.setCursor(Qt.CursorShape.OpenHandCursor)
         except Exception:
             pass
         super().mouseReleaseEvent(event)

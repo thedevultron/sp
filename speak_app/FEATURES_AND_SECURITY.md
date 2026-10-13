@@ -7,13 +7,13 @@
 ## 1. Features
 
 ### Live Voice Dictation (`Ctrl + Space`)
-- Streams microphone audio (16 kHz mono) to Gemini live transcription.
+- Streams microphone audio (16 kHz mono) to live transcription.
 - Transcribed speech is typed **directly at the cursor** in whatever app is focused (Notepad, Word, browser, Discord…), sub-second, with multilingual auto-detect.
-- Floating capsule shows live status, sound-wave visualizer (mic vs Gemini), interim preview, and a token/context bar.
+- Floating capsule shows live status, sound-wave visualizer (mic vs voice), interim preview, and a token/context bar.
 
 ### Multimodal Live Companion (`Win + Shift`)
-- Real-time voice conversation with **Gemini 3 Flash Live** (backup: 3.1 Flash Live Preview, then 2.5 fallbacks — tried in order automatically).
-- Optional **live screen sharing** (~1.5 fps JPEG frames) so Gemini sees your desktop. Toggle any time via the capsule monitor button or Settings → Live Screen; takes effect mid-session without killing audio.
+- Real-time voice conversation with the **AI Engine** (automatic fallback, tried in order automatically).
+- Optional **live screen sharing** (motion-burst JPEG frames, ~1 fps still / faster on change) so the assistant sees your desktop. Toggle any time via the capsule monitor button or Settings → Live Screen; takes effect mid-session without killing audio.
 - Replies play through your speakers; capsule shows `Speaking...` / `Listening...` states.
 - Screen-off mode = voice-only companion.
 
@@ -51,15 +51,18 @@
 
 ---
 
-## 2. Models
+## 2. AI Engine
 
-| Use | Primary | Fallbacks |
-|-----|---------|-----------|
-| Dictation | `gemini-3.5-transcribe-live` | — |
-| Companion (Live, audio + screen) | `gemini-3-flash-live` | `gemini-3.1-flash-live-preview`, `gemini-2.5-flash-live`, `gemini-live-2.5-flash-native-audio` |
-| Refine (one-shot edit) | `gemini-3.5-flash-lite` | `gemini-3.1-flash-lite`, `gemini-2.5-flash` |
+| Use | Engine |
+|-----|-----------|
+| Dictation | AI Engine (speech-to-text) |
+| Companion (Live, audio + screen + PC) | AI Engine with automatic fallback |
+| Refine (one-shot edit) | AI Engine with automatic fallback |
 
-- Stored configs with retired IDs are auto-repaired on load; custom model IDs you entered yourself are never overwritten.
+- Reasoning depth is Settings-selectable (`LOW` / `MEDIUM` / `HIGH`, default `MEDIUM`); transcription stays `SMART`-locked.
+- PC agent tools (`pc_click`, `pc_type`, `pc_scroll`, `pc_key`, `pc_hotkey`, `pc_drag`, …) run desktop UI actions only — no shell — under a 25-step governor with loop refusal, audit log, and stop-word/Esc kill.
+
+- Stored configs with retired IDs are auto-repaired on load; custom engine IDs you entered yourself are never overwritten.
 - Companion failover: on connection failure the client rotates API keys and retries; after 3 failures in 30 s it stops loudly with an error instead of hot-looping.
 
 ---
@@ -76,7 +79,7 @@
 
 ### Config file hardening
 - Atomic writes (temp file + replace) to `%APPDATA%\SPEAK_AI\config.json`, with `icacls` restricted to the current user.
-- All loaded values sanitized: temperatures/fps clamped, model IDs repaired against a known-bad list, prompts capped at 2000 chars with control characters stripped, trigger words restricted to `[a-z0-9-]{2,24}`, custom names to 24 chars, max 3 customs, duplicate triggers rejected.
+- All loaded values sanitized: temperatures/fps clamped, engine IDs repaired against a known-bad list, prompts capped at 2000 chars with control characters stripped, trigger words restricted to `[a-z0-9-]{2,24}`, custom names to 24 chars, max 3 customs, duplicate triggers rejected.
 
 ### Injection safety
 - Typing uses `SendInput` unicode (multilingual-safe); refined text capped at 4000 chars per replace; Backspace deletes capped at 4000; audio playback chunks capped (192 KB) with a bounded 64-slot queue (oldest dropped, loop never blocked).
@@ -123,4 +126,4 @@ python build.py --installer       # -> + installer\SPEAK_Setup_v2.1.exe (needs I
 | `Mic silent / Mic Error` | Wrong input device | Preferences → Microphone → Refresh |
 | Refine says `Click your document, then <word>` | Capsule had focus | Click target app, say trigger again (hands-free works best) |
 | Capsule hidden | By design (hotkey-only) | `Ctrl+Space`, or tray → Show capsule |
-| `Live connect keeps failing` | Bad stored model IDs | Fixed automatically on load; otherwise check keys/network |
+| `Live connect keeps failing` | Bad stored engine IDs | Fixed automatically on load; otherwise check keys/network |

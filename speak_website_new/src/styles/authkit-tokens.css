@@ -1,19 +1,67 @@
 :root {
-  --color-midnight-canvas: #05060f;
-  --color-steel-plate: #2f343e;
-  --surface-frosted-glass: rgba(186, 214, 247, 0.03);
-  --surface-deep-glass: rgba(5, 6, 15, 0.95);
-  --color-fog-veil: #9da7ba;
-  --color-moon-mist: #c7d3ea;
-  --color-frost-glow: #d1e4fa;
-  --gradient-ice-highlight: linear-gradient(0deg, #d8ecf8 0%, #98c0ef 100%);
+  /* Linear — midnight precision instrument · blue accent edition */
+  --color-void: #08090a;
+  --color-carbon: #0f1011;
+  --color-obsidian: #161718;
+  --color-graphite: #23252a;
+  --color-smoke: #383b3f;
+  --color-ash: #62666d;
+  --color-fog: #8a8f98;
+  --color-mist: #d0d6e0;
+  --color-bone: #e5e5e6;
+  --color-paper: #ffffff;
+  --color-acid-lime: #4c8dff;
+  --color-accent: #4c8dff;
+  --color-accent-soft: rgba(76, 141, 255, 0.14);
+  --color-accent-line: rgba(76, 141, 255, 0.55);
+  --color-pulse-green: #27a644;
+  --color-coral-red: #eb5757;
+  --color-signal-teal: #02b8cc;
+  --color-iris-violet: #6366f1;
+  --color-lavender: #8b5cf6;
+
+  --font-inter-variable: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-berkeley-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-caption: 13px;
+  --text-body-sm: 15px;
+  --text-body-lg: 20px;
+  --text-subheading: 24px;
+  --text-heading-sm: 32px;
+  --text-heading: 48px;
+  --text-heading-lg: 64px;
+  --text-display: 72px;
+
+  --page-max-width: 1200px;
+  --section-gap: 96px;
+  --card-padding: 24px;
+  --element-gap: 8px;
+
+  --radius-cards: 12px;
+  --radius-pills: 9999px;
+  --radius-badges: 4px;
+  --radius-inputs: 6px;
+  --radius-buttons: 6px;
+
+  --shadow-sm: rgba(0, 0, 0, 0.4) 0px 2px 4px 0px;
+  --shadow-xl: rgba(8, 9, 10, 0.6) 0px 4px 32px 0px;
+
+  /* Legacy aliases — mapped to Linear so old classnames keep working */
+  --color-midnight-canvas: var(--color-void);
+  --color-steel-plate: var(--color-graphite);
+  --surface-frosted-glass: rgba(255,255,255,0.02);
+  --surface-deep-glass: var(--color-carbon);
+  --color-fog-veil: var(--color-fog);
+  --color-moon-mist: var(--color-mist);
+  --color-frost-glow: var(--color-mist);
+  --gradient-ice-highlight: none;
   --color-pure-white: #ffffff;
-  --color-void-violet: #663af3;
-  --color-blueprint-blue: #b6d9fc;
-  --color-glass-edge: rgba(186, 215, 247, 0.12);
-  --color-green: #22c55e;
+  --color-void-violet: var(--color-acid-lime);
+  --color-blueprint-blue: var(--color-mist);
+  --color-glass-edge: var(--color-graphite);
+  --color-green: var(--color-pulse-green);
   --color-amber: #f59e0b;
-  --color-red: #ef4444;
-  --shadow-glass: inset 0 1px 1px rgba(199, 211, 234, 0.12), inset 0 24px 48px rgba(199, 211, 234, 0.05), 0 24px 32px rgba(6, 6, 14, 0.7);
-  --shadow-widget: inset 0 1px 1px rgba(216, 236, 248, 0.2), inset 0 24px 48px rgba(168, 216, 245, 0.06), 0 16px 32px rgba(0, 0, 0, 0.6);
+  --color-red: var(--color-coral-red);
+  --shadow-glass: inset 0 0 0 1px var(--color-graphite);
+  --shadow-widget: inset 0 0 0 1px var(--color-graphite);
 }

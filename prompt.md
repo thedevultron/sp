@@ -181,11 +181,11 @@ speak_app/
 6. GLOBAL SHORTCUTS & INTERACTION LOGIC (`hotkeys.py`)
 ========================================================================
 - HOTKEY 1: `Ctrl + Space` -> Dictation Mode
-  - Activates `gemini-3.5-transcribe-live`. Streams mic audio over WebSockets. As partial transcripts return sub-second, inject text directly into active Windows app fields using synthetic keystrokes (`pyautogui`).
+  - Activates the speech-to-text engine. Streams mic audio over WebSockets. As partial transcripts return sub-second, inject text directly into active Windows app fields using synthetic keystrokes (`pyautogui`).
 - HOTKEY 2: `Ctrl + Win` -> Hard Reset Session / Token Purge
   - Immediately terminates active WebSocket session, resets token buffer count to 0%, clears history memory, and restarts clean API session.
 - HOTKEY 3: `Win + Shift` -> Multimodal Live Companion Mode
-  - Initializes continuous bidirectional audio/video stream using `gemini-3.5-transcribe-live-live`. Streams screen frames (via `mss`) and mic audio, playing generated audio responses back in real-time.
+  - Initializes continuous bidirectional audio/video stream using the AI Engine. Streams screen frames (via `mss`) and mic audio, playing generated audio responses back in real-time.
 
 ========================================================================
 7. TRANSPARENT SCREEN MARKING LAYER (`ui/screen_canvas.py`)

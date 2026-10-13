@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Speak</string>
+    <string name="accessibility_service_description">Enables the floating glass capsule to seamlessly transcribe speech and refine text across any application.</string>
+    <string name="developer_attribution">Made by Amir Bagawan</string>
+    <string name="overlay_service_notification_title">Speak Floating HUD</string>
+    <string name="overlay_service_notification_text">Tap to control voice intelligence</string>
+</resources>

@@ -1,9 +1,10 @@
 PySide6==6.8.2
 qasync==0.27.1
-# Transcribe-live fields (language_codes/mode=SMART/custom_vocabulary +
-# interim transcripts) need SDK >= 2.19. Code degrades gracefully on older
-# SDKs (VERBATIM, no interim) but dictation accuracy suffers — upgrade.
-google-genai>=2.19.0,<3.0.0
+# Live extended-thinking fields (thinking_level LOW/MEDIUM/HIGH,
+# NON_BLOCKING tool behavior, interaction_status, media_resolution) need
+# SDK >= 2.22. Code degrades gracefully on older SDKs but the 3.8 agent
+# features require it — upgrade.
+google-genai>=2.22.0,<3.0.0
 pynput==1.8.1
 sounddevice==0.5.2
 numpy==2.1.3

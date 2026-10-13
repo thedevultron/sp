@@ -1,0 +1,15 @@
+:root {
+  --midnight: #05060f;
+  --abyss: #080a16;
+  --frost: #eef4ff;
+  --mist: #b6d9fc;
+  --dim: #8b93b0;
+  --violet: #663af3;
+  --violet-hot: #7a52f5;
+  --ice: #d1e4fa;
+  --line: rgba(182, 217, 252, 0.12);
+  --glass: rgba(13, 17, 32, 0.6);
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}

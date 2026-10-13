@@ -46,16 +46,16 @@ If you need to update the hidden key: edit `src/_embedded_key.py` `_P1/_P2/_P3` 
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 # or iscc installer.iss if in PATH
 ```
-- Output: `installer\SPEAK_Setup_v2.0.exe` (Publisher: Amir Bagawan)
+- Output: `installer\SPEAK_Setup_v2.1.exe` (Publisher: Amir Bagawan)
 
 ### C) Test locally
-- Double-click `installer\SPEAK_Setup_v2.0.exe` (check Desktop/Startup options).
+- Double-click `installer\SPEAK_Setup_v2.1.exe` (check Desktop/Startup options).
 - Launch: Settings should show "Free tier active" (green) if no user key, rounded corners, no outline, shadow under capsule.
 - Ctrl+Space: capsule above taskbar, blue wave, type in Notepad — verify multilingual + refine.
 - Refine: dictate 2 sentences, say "refine" or tap Refine — should delete what was typed in focused field and paste refined (copied), no Enter.
 
 ### D) Distribute
-- Send `installer\SPEAK_Setup_v2.0.exe`. Receiver double-clicks Next>Next>Install. Free works immediately; they can add their key in Setup for unlimited.
+- Send `installer\SPEAK_Setup_v2.1.exe`. Receiver double-clicks Next>Next>Install. Free works immediately; they can add their key in Setup for unlimited.
 
 ---
 

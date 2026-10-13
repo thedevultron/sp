@@ -1,0 +1,31 @@
+{
+  "name": "Voxula AI",
+  "description": "Native Windows AI voice dictation and multimodal desktop copilot powered by Gemini Live.",
+  "url": "https://voxula-ai.web.app/",
+  "documentation": "https://voxula-ai.web.app/docs",
+  "version": "2.1.0",
+  "capabilities": [
+    "voice-dictation",
+    "real-time-transcription",
+    "multimodal-desktop-companion",
+    "voice-screen-control",
+    "voice-refine-and-rewrite"
+  ],
+  "resources": [
+    {
+      "name": "Documentation",
+      "type": "documentation",
+      "url": "https://voxula-ai.web.app/docs"
+    },
+    {
+      "name": "Installer",
+      "type": "download",
+      "url": "https://github.com/codedebuggalt/voxula_ai_installer/raw/main/SPEAK_Setup_v2.1.exe"
+    },
+    {
+      "name": "LLMS Information",
+      "type": "llms-txt",
+      "url": "https://voxula-ai.web.app/llms.txt"
+    }
+  ]
+}

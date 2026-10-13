@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "npx",
+      "args": ["-y", "shadcn-ui-mcp-server"]
+    },
+    "21st-dev": {
+      "command": "npx",
+      "args": ["-y", "@21st-dev/magic@latest"]
+    },
+    "react-bits": {
+      "command": "npx",
+      "args": ["-y", "reactbits-dev-mcp-server"]
+    },
+    "refero-styles": {
+      "command": "npx",
+      "args": ["-y", "ref-tools-mcp@latest"]
+    }
+  }
+}

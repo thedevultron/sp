@@ -12,3 +12,6 @@ amri.pfx
 *.pfx
 speak_website/public/*.exe
 *.exe
+speak_app/src.zip
+speak_demo_video/SPEAK_Cinematic_32s.mp4
+speak_demo_video/SPEAK_Demo_30s.mp4

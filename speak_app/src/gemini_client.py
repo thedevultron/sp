@@ -44,10 +44,11 @@ REFINE_PROMPTS = {
 }
 BUILTIN_REFINE_IDS = ("refine", "polish", "elaborate")
 
-# ---- typeTextAtCursor tool schema (locked — do not alter shape) ----
+# ---- typeTextAtCursor tool schema ----
 # Drafts and types structured message content into the user's active cursor.
 # All typing actions bind directly to this schema. Verification flags are
 # driven by Settings > Message Verification (see ConfigManager).
+# NON_BLOCKING: required by gemini-3.8-live-extended-thinking (async tools).
 TYPE_TEXT_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -57,6 +58,7 @@ TYPE_TEXT_TOOL = types.Tool(
                 "active cursor/focused input field. Automatically formats message "
                 "based on intent and settings."
             ),
+            behavior=types.Behavior.NON_BLOCKING,
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
@@ -77,43 +79,101 @@ TYPE_TEXT_TOOL = types.Tool(
                         description="Tone applied to the message (e.g., formal, friendly, casual, concise).",
                     ),
                 },
-                required=["content", "requireVerification", "autoSubmit"],
+                # Only content is required: server-side turns with partial
+                # args must not 400 the whole turn — Settings defaults fill
+                # requireVerification/autoSubmit/tone client-side.
+                required=["content"],
             ),
         )
     ]
 )
 
+# ---- Companion tools: type + send only (kept deliberately simple) ----
+# typeTextAtCursor drafts text at the cursor; autoSubmit presses Enter to send.
+ALL_COMPANION_TOOLS = [TYPE_TEXT_TOOL]
+
 # Verbal-confirmation + cursor-aware tone suffix. Appended to (never replacing)
 # the user's stored system instruction so existing behavior is retained.
 _VERBAL_CONFIRM_SUFFIX = (
-    "\n\nTool behavior: when you call typeTextAtCursor, always provide a brief verbal "
-    "confirmation of what was drafted before or while typing (never type silently). "
+    "\n\nTool behavior: when you call typeTextAtCursor or any pc_* action, always provide a brief verbal "
+    "confirmation of what you did before, while, or just after doing it (never act silently). "
     "Adapt tone to the cursor context when a tone hint is available "
     "(formal for documents/mail, friendly for chat, concise for code/commands)."
+    "\nScreen: you CAN see the user's screen via live video frames (motion-burst JPEG, ~1 fps still / faster on change). "
+    "Your action tools are typeTextAtCursor (draft + send text) and the pc_* desktop tools "
+    "(pc_move, pc_click, pc_double_click, pc_right_click, pc_drag, pc_scroll, pc_type, pc_key, pc_hotkey, pc_wait). "
+    "All tools run asynchronously — keep talking while they execute, then confirm verbally what happened."
 )
 
-_LOCKED_THINKING_LEVEL = "HIGH"
-_LOCKED_TRANSCRIPTION_MODE = "SMART"
+# Agent protocol — Voxula AI voice agent: full authority, no hallucinations.
+# Identity + function roster live here (always appended) so EVERY install —
+# old configs included — instructs the model correctly.
+_AGENT_PROTOCOL_SUFFIX = (
+    "\n\nYou are Voxula AI — the voice agent inside the Voxula AI Windows app. "
+    "You speak, you see the live screen, and you ACT on the PC. When the user "
+    "tells you to do something, DO IT with your functions — never just describe how they could do it."
+    "\nYOUR FUNCTIONS:"
+    "\n- typeTextAtCursor(content, requireVerification=false, autoSubmit=true, tone): type text at the focused field, Enter sends it."
+    "\n- pc_click(x, y, button=left) / pc_double_click(x, y) / pc_right_click(x, y): click what you SEE (0-999 screen coords)."
+    "\n- pc_move(x, y): hover. pc_drag(start_x, start_y, end_x, end_y): drag/select. pc_scroll(x, y, direction, magnitude)."
+    "\n- pc_type(text, press_enter): type at current focus. pc_key(key): one key (enter, tab, esc, arrows, f1-f12, letters)."
+    "\n- pc_hotkey(keys): MANY KEYS AT ONCE — chords like 'ctrl+c', 'ctrl+shift+s', 'alt+tab', 'win+d'."
+    "\n- pc_open_app(app): open programs, files, URLs by name. pc_shell(command): short safe shell commands (destructive patterns refused)."
+    "\n- pc_wait(seconds): pause to let the screen settle. save_memory/forget_memory: durable user facts."
+    "\nAUTHORITY: the user gives you full authority to operate this PC by voice. "
+    "Always set requireVerification=false and autoSubmit=true on typeTextAtCursor so messages are typed AND sent."
+    "\nGROUNDING — follow exactly:"
+    "\n1. LOOK FIRST: act ONLY on what you can SEE in the latest screen frame. Coordinates are 0-999 on the visible screen. Never invent window or button names from memory."
+    "\n2. ONE ACTION PER TURN: call exactly one pc_* action (or one typeTextAtCursor), then WAIT for the next screen frame to confirm the result before the next step."
+    "\n3. NARRATE: say what you are about to do ('Clicking the Send button…'), then confirm what happened ('Sent.')."
+    "\n4. NEVER INVENT: if you cannot see what the user refers to, say what you actually see and ask which window it is in."
+    "\n5. NO LOOPS: never repeat an identical failed action more than twice — report the failure and stop."
+    "\n6. STOP WORDS: if the user says stop, cancel, or never mind, halt immediately and confirm you stopped."
+)
+
+# Back-compat alias (older configs/prompts referenced the control suffix).
+_CONTROL_PROTOCOL_SUFFIX = _AGENT_PROTOCOL_SUFFIX
+
+# Thinking depth default (Settings > Agent Reasoning can set LOW / MEDIUM / HIGH).
+_DEFAULT_THINKING_LEVEL = "MEDIUM"
+
+# Gemini 3 frame token costs (media_resolution): LOW 280 / MEDIUM 560 / HIGH 1120.
+# Pre-3 models used ~258-268 (Pan & Scan) — do NOT use those numbers on 3.x.
+SCREEN_TOKENS_PER_FRAME = {"LOW": 280, "MEDIUM": 560, "HIGH": 1120}
 
 
-def _locked_thinking_config():
-    """thinking_level HIGH — locked for high-accuracy context awareness.
+def _screen_frame_tokens() -> int:
+    try:
+        return SCREEN_TOKENS_PER_FRAME.get(config_vault.get_screen_detail(), 560)
+    except Exception:
+        return 560
 
-    Spec requires thinking_level="HIGH". Installed SDK (1.21.0) only exposes
-    thinking_budget/include_thoughts, so we attempt HIGH first (forward-compat
-    with newer Gemini Live API) and fall back to a high budget which is the
-    equivalent HIGH-effort setting on this SDK. Returns None only if neither
-    shape is supported — callers must guard LiveConnectConfig field existence.
+
+def _thinking_config_for(level: str):
+    """ThinkingConfig for the Settings-selected depth (LOW / MEDIUM / HIGH).
+
+    Extended-thinking models do not support MINIMAL. Returns None when the
+    SDK shape is unavailable — callers must guard the LiveConnectConfig
+    field. thinking_budget (2.5-era) is intentionally NOT used on 3.x.
     """
     try:
-        return types.ThinkingConfig(thinking_level=_LOCKED_THINKING_LEVEL)
-    except Exception:
-        pass
-    try:
-        # HIGH ≈ maximum reasoning effort on budget-based SDKs
-        return types.ThinkingConfig(thinking_budget=2048)
+        lv = str(level or _DEFAULT_THINKING_LEVEL).strip().upper()
+        if lv not in ("LOW", "MEDIUM", "HIGH"):
+            lv = _DEFAULT_THINKING_LEVEL
+        return types.ThinkingConfig(thinking_level=lv)
     except Exception:
         return None
+
+
+def _is_thinking_model(model_id: str) -> bool:
+    """False for plain live models that reject thinking_config (3.8-live)."""
+    try:
+        return str(model_id or "").strip() not in config_vault.NO_THINK_MODELS
+    except Exception:
+        return True
+
+
+_LOCKED_TRANSCRIPTION_MODE = "SMART"
 
 
 def _supports_live_field(name: str) -> bool:
@@ -226,7 +286,7 @@ class GeminiLiveManager(QObject):
     refine_completed = Signal(str, str)
     refine_failed = Signal(str)
 
-    MAX_CONTEXT_TOKENS = 128000
+    MAX_CONTEXT_TOKENS = 131072  # gemini-3.8-live input window
 
     def __init__(self, audio_engine, screen_engine, transcript_buffer=None):
         super().__init__()
@@ -269,6 +329,50 @@ class GeminiLiveManager(QObject):
         self._audio_bytes_out = 0
         self._mic_silent_warns = 0
         self._dictation_clean_close = None
+        self._tool_call_ts: list = []
+        self._memory_tool_hook = self._handle_memory_tool
+        self._played_hashes: list = []
+
+    async def _handle_memory_tool(self, tool_call) -> None:
+        try:
+            calls = getattr(tool_call, "function_calls", None) or []
+        except Exception:
+            return
+        for call in calls:
+            try:
+                name = getattr(call, "name", "") or ""
+                if name not in ("save_memory", "forget_memory"):
+                    continue
+                args = getattr(call, "args", {}) or {}
+                if isinstance(args, str):
+                    try:
+                        import json as _j
+                        args = _j.loads(args)
+                    except Exception:
+                        args = {}
+                if name == "save_memory":
+                    fact = str(args.get("fact", "") or "")[:200]
+                    try:
+                        from src.memory_store import add_fact as _add
+                        res = _add(fact)
+                        status = f"Remembered ({res.get('id', '')})." if res.get("ok") else "Too long/empty — not saved."
+                    except Exception as e:
+                        status = f"Memory save failed: {e}"
+                    print(f"[Memory] save_memory -> {status}")
+                    await self._reply_tool(call, status)
+                else:
+                    q = str(args.get("query", "") or "")[:80]
+                    try:
+                        from src.memory_store import forget_fact as _fg
+                        res = _fg(q)
+                        status = f"Forgot {res.get('removed', 0)} fact(s)." if res.get("ok") else "No match."
+                    except Exception as e:
+                        status = f"Forget failed: {e}"
+                    print(f"[Memory] forget_memory -> {status}")
+                    await self._reply_tool(call, status)
+            except Exception as e:
+                print(f"[Memory] hook note: {e}")
+                continue
 
     def _on_buffer_update(self, text: str):
         self.current_transcript_buffer = text
@@ -327,14 +431,13 @@ class GeminiLiveManager(QObject):
         return "fresh"
 
     def _emit_companion_status(self, model_id=None):
-        """Single source of truth for companion status (never loses screen state)."""
+        """Single source of truth for companion status (never loses screen state).
+
+        model_id is accepted but never shown — the UI stays model-agnostic.
+        """
         try:
             screen = " + Screen" if getattr(self, "_screen_enabled", True) else " \u2014 Voice only"
-            if model_id:
-                short = str(model_id).replace("gemini-", "")[:28]
-                self.status_changed.emit(f"Companion ({short}){screen}", "active")
-            else:
-                self.status_changed.emit(f"Companion Live{screen}", "active")
+            self.status_changed.emit(f"Companion Live{screen}", "active")
         except Exception:
             pass
 
@@ -347,13 +450,23 @@ class GeminiLiveManager(QObject):
             return True, False
 
     def build_locked_system_instruction(self, base: str = "") -> str:
-        """Base instruction + retained verbal-confirmation / cursor-tone suffix."""
+        """Base + memory block + verbal-confirm + control-protocol suffixes."""
         try:
             b = (base or "").strip() or config_vault.build_system_instruction()
         except Exception:
             b = base or ""
+        # Small persistent memory — auto-loaded each session, token-capped
+        try:
+            from src.memory_store import memory_summary_block as _mem_block
+            mem = _mem_block()
+            if mem and mem not in b:
+                b = (b + "\n\n" + mem) if b else mem
+        except Exception:
+            pass
         if _VERBAL_CONFIRM_SUFFIX.strip() not in b:
             b = (b + _VERBAL_CONFIRM_SUFFIX) if b else _VERBAL_CONFIRM_SUFFIX.strip()
+        if _CONTROL_PROTOCOL_SUFFIX.strip() not in b:
+            b = (b + _CONTROL_PROTOCOL_SUFFIX) if b else _CONTROL_PROTOCOL_SUFFIX.strip()
         return b
 
     def _apply_tone(self, content: str, tone: str = "") -> str:
@@ -469,6 +582,97 @@ class GeminiLiveManager(QObject):
                             print(f"[Tool] response note: {e}")
             except Exception as e:
                 print(f"[Tool] handle note: {e}")
+                continue
+
+    # ---- tool replies (type + memory share this path) ----
+    async def _reply_tool(self, call, status: str):
+        try:
+            if self.session is None:
+                return
+            try:
+                await self.session.send(
+                    input=types.LiveClientToolResponse(
+                        function_responses=[types.FunctionResponse(name=getattr(call, "name", ""), id=getattr(call, "id", "id"), response={"status": status})]
+                    )
+                )
+                return
+            except Exception:
+                pass
+            try:
+                await self.session.send_tool_response(
+                    function_responses=types.FunctionResponse(id=getattr(call, "id", "id"), name=getattr(call, "name", ""), response={"status": status})
+                )
+            except Exception as e:
+                print(f"[Tool] control response note: {e}")
+        except Exception:
+            pass
+
+    async def handle_any_tool_call(self, tool_call) -> None:
+        try:
+            await self.handle_type_text_tool_call(tool_call)
+        except Exception:
+            pass
+        # PC desktop tools (pc_click/type/scroll/keys...) — governed, threaded
+        try:
+            await self.handle_pc_tool_call(tool_call)
+        except Exception:
+            pass
+        # Memory tools are dispatched by the memory hook (same tool_call shape)
+        try:
+            hook = getattr(self, "_memory_tool_hook", None)
+            if hook is not None:
+                await hook(tool_call)
+        except Exception:
+            pass
+
+    async def handle_pc_tool_call(self, tool_call) -> None:
+        """Execute pc_* desktop actions via the safety governor.
+
+        Runs in a worker thread (asyncio.to_thread) so mouse/keyboard work
+        never blocks the Live audio loops — the async shape extended-thinking
+        requires. Each call gets its own FunctionResponse via _reply_tool.
+        """
+        try:
+            calls = getattr(tool_call, "function_calls", None) or []
+        except Exception:
+            return
+        try:
+            from src.pc_control import PC_ACTION_NAMES as _PC_NAMES, execute_pc_call as _pc_exec
+        except Exception:
+            return
+        for call in calls:
+            try:
+                name = getattr(call, "name", "") or ""
+                if name not in _PC_NAMES:
+                    continue
+                args = getattr(call, "args", {}) or {}
+                if isinstance(args, str):
+                    try:
+                        import json as _j
+                        args = _j.loads(args)
+                    except Exception:
+                        args = {}
+                gov = getattr(self, "_pc_governor", None)
+                print(f"[Tool Execution] {name} args={str(args)[:160]}")
+                try:
+                    import asyncio as _aio
+                    status = await _aio.to_thread(_pc_exec, name, args, gov)
+                except Exception:
+                    try:
+                        status = _pc_exec(name, args, gov)
+                    except Exception as e:
+                        status = f"PC action error: {e}"
+                print(f"[Tool Result] {name}: {str(status)[:160]}")
+                try:
+                    self.status_changed.emit(f"{name}: {str(status)[:60]}", "active")
+                except Exception:
+                    pass
+                try:
+                    await self._reply_tool(call, str(status))
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"[Tool] pc note: {e}")
                 continue
 
     async def start_dictation_mode(self):
@@ -726,17 +930,42 @@ class GeminiLiveManager(QObject):
                 pass
 
     async def _handle_failover(self, error: Exception, mode: str):
-        print(f"[GeminiLive] Failover: {error}")
+        kind = _classify_live_error(error)
+        # Never surface raw provider text (may echo IDs) — log full, show classified.
+        try:
+            print(f"[GeminiLive] Failover ({mode}/{kind}): {error}")
+        except Exception:
+            pass
         # Dictation uses a strict STT-only config. A 400/INVALID_ARGUMENT here
         # means the server rejected the setup itself — rotating keys and
         # retrying the identical setup would hot-loop, so stop loudly with an
         # actionable message instead.
-        if mode == "dictation" and _classify_live_error(error).startswith("bad-request"):
-            self.error_occurred.emit("Dictation rejected by API (400). Upgrade the SDK: pip install -U \"google-genai>=2.19\" then retry.")
+        if mode == "dictation" and kind.startswith("bad-request"):
+            self.error_occurred.emit("Dictation rejected by API (400). Upgrade the SDK: pip install -U \"google-genai>=2.22\" then retry.")
             self.status_changed.emit("Dictation rejected (400)", "error")
             await self.stop_session()
             return
-        # Storm guard: 3+ failovers in 30s means models/keys are bad — stop loudly, no hot loop.
+        # Actionable per-bucket messages (never a bare "system error").
+        if kind.startswith("auth"):
+            self.error_occurred.emit("API key rejected (auth). Open Settings > Setup, paste a fresh Gemini API key, Test, Save, then retry companion.")
+            self.status_changed.emit("Key rejected — check Setup", "error")
+            await self.stop_session()
+            return
+        if kind.startswith("quota"):
+            # Single-key installs cannot rotate away from quota — stop loudly.
+            try:
+                nkeys = len(config_vault.get_all_active_keys())
+            except Exception:
+                nkeys = 1
+            if nkeys <= 1:
+                self.error_occurred.emit("Quota hit on the only API key. Add a backup key in Settings > Setup, wait a minute, then retry.")
+                self.status_changed.emit("Quota hit — add backup key", "error")
+                await self.stop_session()
+                return
+        if kind.startswith("model-not-found"):
+            self.error_occurred.emit("Model ID rejected (404). Stored model repaired on next launch — check Settings > Preferences if it repeats.")
+            self.status_changed.emit("Model unavailable (404)", "error")
+        # Storm guard: 3+ failovers in 30s means the connection or keys are bad — stop loudly, no hot loop.
         try:
             import time as _time
             now = _time.monotonic()
@@ -748,13 +977,13 @@ class GeminiLiveManager(QObject):
             pass
         try:
             if int(getattr(self, "_failover_count", 0) or 0) >= 3:
-                self.error_occurred.emit("Live connect keeps failing — check API keys and companion model IDs in Settings.")
-                self.status_changed.emit("Live connect failed", "error")
+                self.error_occurred.emit(f"Live connect keeps failing ({kind}) — check API keys in Settings and your network, then retry.")
+                self.status_changed.emit(f"Live {kind} — check keys/net", "error")
                 await self.stop_session()
                 return
         except Exception:
             pass
-        self.status_changed.emit("Switching to backup key...", "warn")
+        self.status_changed.emit(f"Switching key ({kind})...", "warn")
         new_key = config_vault.rotate_key()
         if not new_key:
             self.error_occurred.emit("API quota exhausted across all keys. Add backup key in Settings.")
@@ -1129,8 +1358,6 @@ class GeminiLiveManager(QObject):
             self._refine_in_progress = False
 
     async def _call_flash_lite(self, text: str, action_type: str):
-        if not self.client and not self._init_sdk_client():
-            raise RuntimeError("No client")
         # Settings-editable prompt wins; REFINE_PROMPTS is fallback only.
         try:
             base_prompt = config_vault.get_refine_prompt(action_type)
@@ -1152,10 +1379,12 @@ class GeminiLiveManager(QObject):
         except Exception:
             pass
         prompt = base_prompt + text
+        if not self.client and not self._init_sdk_client():
+            raise RuntimeError("No client")
         last_err = None
         for model_id in config_vault.get_refine_models():
             try:
-                print(f"[Gemini] FlashLite {model_id}")
+                print("[Gemini] Refine attempt")
                 loop = asyncio.get_running_loop()
                 def _call():
                     return self.client.models.generate_content(model=model_id, contents=prompt)
@@ -1173,12 +1402,12 @@ class GeminiLiveManager(QObject):
                                 return txt
                 except Exception:
                     pass
-                raise RuntimeError(f"Empty {model_id}")
+                raise RuntimeError("Empty refine response")
             except Exception as e:
                 last_err = e
-                print(f"[Gemini] FlashLite {model_id} fail {e}")
+                print(f"[Gemini] Refine attempt failed: {e}")
                 continue
-        raise RuntimeError(f"All refine models failed: {last_err}")
+        raise RuntimeError(f"All refine attempts failed: {last_err}")
 
     async def _apply_refined_text(self, refined: str, fallback_len: int = 0):
         # Session delete-and-replace: delete everything typed this session, then type refined.
@@ -1238,7 +1467,7 @@ class GeminiLiveManager(QObject):
         except Exception:
             pass
         model_id = config_vault.get_dictation_model()
-        print(f"[GeminiLive] Dictation model: {model_id}")
+        print("[GeminiLive] Dictation starting")
         # Strict STT-only config (no tools/thinking/system prompt — server 400s them).
         try:
             live_config = _build_dictation_config()
@@ -1251,7 +1480,7 @@ class GeminiLiveManager(QObject):
         try:
             smart_ok, vocab_ok, _ = _dictation_sdk_status()
             if not smart_ok:
-                print("[GeminiLive] SDK predates SMART transcription (need google-genai>=2.19) — running VERBATIM fallback")
+                print("[GeminiLive] SDK predates SMART transcription (need google-genai>=2.22) — running VERBATIM fallback")
         except Exception:
             pass
         attempt = 0
@@ -1265,9 +1494,20 @@ class GeminiLiveManager(QObject):
             except Exception:
                 self._dictation_clean_close = None
             try:
-                async with self.client.aio.live.connect(model=model_id, config=live_config) as session:
+                try:
+                    session, _dcm = await self._connect_live(model_id, live_config, timeout_s=25.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    kind = "connect-timeout"
+                    print(f"[GeminiLive] Dictation connect timed out (attempt {attempt}) — retrying...")
+                    try:
+                        self.status_changed.emit("Dictation slow — retrying...", "warn")
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1.0)
+                    continue
+                try:
                     self.session = session
-                    self.status_changed.emit(f"Dictating ({model_id})", "active")
+                    self.status_changed.emit("Dictating...", "active")
                     send_task = asyncio.create_task(self._send_audio_loop(stop_event=getattr(self, "_dictation_clean_close", None)))
                     recv_task = asyncio.create_task(self._receive_dictation_loop())
                     self._bg_tasks.add(send_task)
@@ -1280,7 +1520,7 @@ class GeminiLiveManager(QObject):
                         # Sibling-task failure (sendLoop recvLoop already
                         # failovers internally) — classify loudly, then failover.
                         kind = _classify_live_error(e)
-                        print(f"[GeminiLive] Dictation model {model_id} failed (attempt {attempt}, {kind}): {e}")
+                        print(f"[GeminiLive] Dictation failed (attempt {attempt}, {kind}): {e}")
                         try:
                             self.status_changed.emit(f"Dictation {kind} — retrying...", "warn")
                         except Exception:
@@ -1288,11 +1528,16 @@ class GeminiLiveManager(QObject):
                         if self._is_active:
                             await self._handle_failover(e, "dictation")
                         return
+                finally:
+                    try:
+                        await _dcm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 kind = _classify_live_error(e)
-                print(f"[GeminiLive] Dictation model {model_id} failed (attempt {attempt}, {kind}): {e}")
+                print(f"[GeminiLive] Dictation failed (attempt {attempt}, {kind}): {e}")
                 try:
                     self.status_changed.emit(f"Dictation {kind} — retrying...", "warn")
                 except Exception:
@@ -1318,23 +1563,18 @@ class GeminiLiveManager(QObject):
                 continue
             break
 
-    async def _run_companion_pipeline(self):
-        if not self._init_sdk_client():
-            self._is_active = False
-            return
-        comp_models = config_vault.get_companion_models()
-        print(f"[GeminiLive] Companion models: {comp_models}  screen={self._screen_enabled}")
+    def _build_companion_config(self, model_id: str, sys_prompt: str):
+        """Per-model LiveConnectConfig.
+
+        - Thinking models (3.8-extended-thinking, legacy 3.1 chain): thinking_config
+          at the Settings-selected depth (LOW / MEDIUM / HIGH, default MEDIUM).
+        - Plain live models (gemini-3.8-live): thinking_config OMITTED (rejected).
+        - media_resolution from Settings screen detail (MEDIUM 560 / HIGH 1120).
+        - ALL tools NON_BLOCKING (async-only on extended-thinking).
+        Never raises — falls back to a minimal audio config.
+        """
         cfg = config_vault.config
-        # Use vault helper that injects custom words/mark + locked verbal-confirm suffix
         try:
-            sys_prompt = self.build_locked_system_instruction(config_vault.build_system_instruction())
-        except Exception:
-            try:
-                sys_prompt = self.build_locked_system_instruction(cfg.get("system_instruction", "") or "You are SPEAK, a fast, intelligent real-time companion.")
-            except Exception:
-                sys_prompt = cfg.get("system_instruction", "") or "You are SPEAK, a fast, intelligent real-time companion."
-        try:
-            _think = _locked_thinking_config()
             _kwargs: dict = {
                 "response_modalities": [types.Modality.AUDIO],
                 "system_instruction": sys_prompt,
@@ -1343,12 +1583,50 @@ class GeminiLiveManager(QObject):
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
                     )
                 ),
-                "tools": [TYPE_TEXT_TOOL],
+                "tools": list(ALL_COMPANION_TOOLS),
             }
-            if _think is not None and _supports_live_field("thinking_config"):
-                _kwargs["thinking_config"] = _think
-            elif _think is not None:
-                print("[GeminiLive] thinking_config HIGH requested but SDK LiveConnectConfig lacks field — running without (SDK 1.21 compat)")
+            # PC desktop tools (click/type/scroll/keys) — best-effort append
+            try:
+                from src.pc_control import PC_TOOLS as _PC_TOOLS
+                for _t in (_PC_TOOLS or []):
+                    if _t not in _kwargs["tools"]:
+                        _kwargs["tools"].append(_t)
+            except Exception:
+                pass
+            # Memory tools (save/forget) — appended best-effort, never fails the build
+            try:
+                from src.memory_store import MEMORY_TOOLS as _MEM_TOOLS
+                for _t in (_MEM_TOOLS or []):
+                    if _t not in _kwargs["tools"]:
+                        _kwargs["tools"].append(_t)
+            except Exception:
+                pass
+            # Thinking depth — omitted entirely for plain live models
+            try:
+                if _is_thinking_model(model_id) and _supports_live_field("thinking_config"):
+                    _think = _thinking_config_for(config_vault.get_live_thinking_level())
+                    if _think is not None:
+                        _kwargs["thinking_config"] = _think
+            except Exception:
+                pass
+            # Vision detail from Settings (best-effort, SDK-gated)
+            try:
+                if _supports_live_field("media_resolution"):
+                    _kwargs["media_resolution"] = (
+                        "MEDIA_RESOLUTION_HIGH" if config_vault.get_screen_detail() == "HIGH"
+                        else "MEDIA_RESOLUTION_MEDIUM"
+                    )
+            except Exception:
+                pass
+            # Survive high-fps sessions: sliding-window compression (best-effort)
+            try:
+                if _supports_live_field("context_window_compression"):
+                    _kwargs["context_window_compression"] = types.ContextWindowCompressionConfig(
+                        trigger_tokens=104857,
+                        sliding_window=types.SlidingWindow(target_tokens=52428),
+                    )
+            except Exception:
+                pass
             live_config = types.LiveConnectConfig(**_kwargs)
             # Ask for transcriptions alongside audio (observability + UI proof-of-life).
             # LOCKED to SMART mode — never fail the build on older SDKs.
@@ -1362,19 +1640,173 @@ class GeminiLiveManager(QObject):
             except Exception:
                 pass
             try:
-                live_config.temperature = float(cfg.get("temperature", 0.3))
+                live_config.temperature = float(cfg.get("temperature", 0.2))
                 live_config.top_p = float(cfg.get("top_p", 0.95))
             except Exception:
                 pass
-            # Re-assert HIGH thinking after temperature/top_p (some SDKs reset extras)
+            # Re-assert thinking after temperature/top_p (some SDKs reset extras)
             try:
-                if _think is not None and _supports_live_field("thinking_config"):
-                    live_config.thinking_config = _think
+                if _is_thinking_model(model_id) and _supports_live_field("thinking_config"):
+                    _think2 = _thinking_config_for(config_vault.get_live_thinking_level())
+                    if _think2 is not None:
+                        live_config.thinking_config = _think2
             except Exception:
                 pass
+            return live_config
         except Exception as e:
             print(f"[GeminiLive] Companion config error: {e}")
-            live_config = types.LiveConnectConfig(response_modalities=["AUDIO"], system_instruction=sys_prompt)
+            return types.LiveConnectConfig(response_modalities=["AUDIO"], system_instruction=sys_prompt)
+
+    def _build_companion_config_stripped(self, model_id: str, sys_prompt: str):
+        """Stripped fallback when the full config is rejected (400).
+
+        Keeps: AUDIO + system prompt + speech + tools + thinking (when required).
+        Drops: media_resolution, context_window_compression, transcriptions,
+        temperature/top_p. If the server rejects the full setup, this is the
+        most likely shape to be accepted — voice + full PC control survive.
+        Never raises.
+        """
+        try:
+            _kwargs: dict = {
+                "response_modalities": [types.Modality.AUDIO],
+                "system_instruction": sys_prompt,
+                "speech_config": types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
+                    )
+                ),
+                "tools": list(ALL_COMPANION_TOOLS),
+            }
+            try:
+                from src.pc_control import PC_TOOLS as _PC_TOOLS
+                for _t in (_PC_TOOLS or []):
+                    if _t not in _kwargs["tools"]:
+                        _kwargs["tools"].append(_t)
+            except Exception:
+                pass
+            try:
+                from src.memory_store import MEMORY_TOOLS as _MEM_TOOLS
+                for _t in (_MEM_TOOLS or []):
+                    if _t not in _kwargs["tools"]:
+                        _kwargs["tools"].append(_t)
+            except Exception:
+                pass
+            try:
+                if _is_thinking_model(model_id) and _supports_live_field("thinking_config"):
+                    _think = _thinking_config_for(config_vault.get_live_thinking_level())
+                    if _think is not None:
+                        _kwargs["thinking_config"] = _think
+            except Exception:
+                pass
+            return types.LiveConnectConfig(**_kwargs)
+        except Exception as e:
+            print(f"[GeminiLive] Stripped config error: {e}")
+            try:
+                return types.LiveConnectConfig(response_modalities=["AUDIO"], system_instruction=sys_prompt)
+            except Exception:
+                return types.LiveConnectConfig(response_modalities=["AUDIO"])
+
+    def _build_companion_config_minimal(self, model_id: str, sys_prompt: str):
+        """Last-resort audio-only config (no tools/transcription/extras).
+
+        Voice survives even when every tool shape is rejected. Thinking is
+        still included when the model REQUIRES it (extended-thinking 1007),
+        otherwise omitted. Never raises.
+        """
+        try:
+            _kwargs: dict = {
+                "response_modalities": [types.Modality.AUDIO],
+                "system_instruction": sys_prompt,
+            }
+            try:
+                if _is_thinking_model(model_id) and _supports_live_field("thinking_config"):
+                    _think = _thinking_config_for(config_vault.get_live_thinking_level())
+                    if _think is not None:
+                        _kwargs["thinking_config"] = _think
+            except Exception:
+                pass
+            return types.LiveConnectConfig(**_kwargs)
+        except Exception:
+            try:
+                return types.LiveConnectConfig(response_modalities=["AUDIO"])
+            except Exception:
+                return None
+
+    def _companion_config_attempts(self, model_id: str, sys_prompt: str):
+        """Ordered (label, config) attempts for one model: full → stripped → minimal."""
+        try:
+            full = self._build_companion_config(model_id, sys_prompt)
+        except Exception:
+            full = None
+        try:
+            stripped = self._build_companion_config_stripped(model_id, sys_prompt)
+        except Exception:
+            stripped = None
+        try:
+            minimal = self._build_companion_config_minimal(model_id, sys_prompt)
+        except Exception:
+            minimal = None
+        out = []
+        if full is not None:
+            out.append(("full", full))
+        if stripped is not None:
+            out.append(("stripped", stripped))
+        if minimal is not None:
+            out.append(("minimal", minimal))
+        return out
+
+    async def _connect_live(self, model_id: str, live_config, timeout_s: float = 25.0):
+        """Connect handshake with a timeout. Returns (session, cm).
+
+        Without this, a stalled handshake hangs the session FOREVER with no
+        error (looks like "can't do anything"). Timeout behaves like any
+        other model failure: caller fails over to the next model.
+        Caller MUST close via cm.__aexit__ when done (finally block).
+        """
+        cm = self.client.aio.live.connect(model=model_id, config=live_config)
+        try:
+            session = await asyncio.wait_for(cm.__aenter__(), timeout=timeout_s)
+            return session, cm
+        except BaseException:
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise
+
+    async def _run_companion_pipeline(self):
+        if not self._init_sdk_client():
+            self._is_active = False
+            return
+        comp_models = config_vault.get_companion_models()
+        print(f"[GeminiLive] Companion starting ({len(comp_models)} candidates)  screen={self._screen_enabled}")
+        cfg = config_vault.config
+        # Use vault helper that injects custom words/mark + locked verbal-confirm suffix
+        try:
+            sys_prompt = self.build_locked_system_instruction(config_vault.build_system_instruction())
+        except Exception:
+            try:
+                sys_prompt = self.build_locked_system_instruction(cfg.get("system_instruction", "") or "You are SPEAK, a fast, intelligent real-time companion.")
+            except Exception:
+                sys_prompt = cfg.get("system_instruction", "") or "You are SPEAK, a fast, intelligent real-time companion."
+        try:
+            print(f"[GeminiLive] Thinking={config_vault.get_live_thinking_level()} detail={config_vault.get_screen_detail()}")
+        except Exception:
+            pass
+        # Fresh PC governor per session (step budget + audit reset on connect)
+        try:
+            from src.pc_control import PCGovernor as _PCGov
+            self._pc_governor = _PCGov()
+        except Exception:
+            self._pc_governor = None
+        try:
+            self._audio_diag_n = 0
+        except Exception:
+            pass
+        try:
+            self._last_interaction_status = None
+        except Exception:
+            pass
         connected = False
         last_err = None
         tried: list[str] = []
@@ -1382,9 +1814,61 @@ class GeminiLiveManager(QObject):
             if not self._is_active:
                 break
             try:
-                print(f"[GeminiLive] Trying companion model: {model_id}")
+                print(f"[GeminiLive] Trying companion candidate ({len(tried) + 1}/{len(comp_models)})")
                 tried.append(str(model_id))
-                async with self.client.aio.live.connect(model=model_id, config=live_config) as session:
+                attempts = self._companion_config_attempts(model_id, sys_prompt)
+                session = None
+                _cm = None
+                attempt_err = None
+                for _label, live_config in attempts:
+                    if not self._is_active:
+                        break
+                    if live_config is None:
+                        continue
+                    try:
+                        print(f"[GeminiLive] {model_id} attempt={_label}")
+                        session, _cm = await self._connect_live(model_id, live_config, timeout_s=25.0)
+                        if _label != "full":
+                            print(f"[GeminiLive] {model_id} connected with {_label} config (full was rejected — voice+control survive)")
+                        attempt_err = None
+                        break
+                    except (asyncio.TimeoutError, TimeoutError) as _te:
+                        print(f"[GeminiLive] {model_id} {_label} timed out after 25 s")
+                        attempt_err = TimeoutError(f"Live connect timed out: {model_id} ({_label})")
+                        # Timeout is transport-level — no point trying slimmer configs on same model.
+                        break
+                    except Exception as _ce:
+                        attempt_err = _ce
+                        _kind = _classify_live_error(_ce)
+                        print(f"[GeminiLive] {model_id} {_label} rejected ({_kind}): {_ce}")
+                        # Auth/quota/timeout: no slimmer config will save this model — next model.
+                        if _kind.startswith("auth") or _kind.startswith("quota") or "connect-timeout" in _kind:
+                            break
+                        # bad-request / model-not-found / server-unavailable: try slimmer shape.
+                        try:
+                            self.status_changed.emit(f"Trying simpler setup ({_label} rejected)...", "warn")
+                        except Exception:
+                            pass
+                        continue
+                if session is None or _cm is None:
+                    if isinstance(attempt_err, (asyncio.TimeoutError, TimeoutError)):
+                        print("[GeminiLive] Companion connect timed out after 25 s — trying next")
+                        try:
+                            self.status_changed.emit("Model slow, trying next...", "warn")
+                        except Exception:
+                            pass
+                        last_err = attempt_err
+                        continue
+                    if attempt_err is not None:
+                        last_err = attempt_err
+                        try:
+                            self.status_changed.emit("Model unavailable, trying next...", "warn")
+                        except Exception:
+                            pass
+                        continue
+                    last_err = Exception(f"Config build failed: {model_id}")
+                    continue
+                try:
                     self.session = session
                     connected = True
                     # A working connect resets the failover storm counter
@@ -1430,11 +1914,16 @@ class GeminiLiveManager(QObject):
                         except Exception:
                             pass
                     break
+                finally:
+                    try:
+                        await _cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 last_err = e
-                print(f"[GeminiLive] Companion model {model_id} failed: {e}")
+                print(f"[GeminiLive] Companion connect failed: {e}")
                 try:
                     self.status_changed.emit(f"Model unavailable, trying next...", "warn")
                 except Exception:
@@ -1442,7 +1931,9 @@ class GeminiLiveManager(QObject):
                 continue
         if not connected and self._is_active:
             try:
-                self.error_occurred.emit(f"Live connect failed ({', '.join(tried) or 'no models'}). Check keys/models.")
+                _kind = _classify_live_error(last_err) if last_err is not None else "connect-error"
+                _tried = ", ".join(tried[:3]) if tried else "no models tried"
+                self.error_occurred.emit(f"Live connect failed ({_kind}). Tried: {_tried}. Check API keys in Settings and your network, then retry.")
             except Exception:
                 pass
             await self._handle_failover(last_err or Exception("Live connect failed"), "companion")
@@ -1470,6 +1961,29 @@ class GeminiLiveManager(QObject):
                     continue
                 if not self._is_active or not self.session:
                     break
+                # Feedback guard: while our own reply is audible, the mic
+                # hears the speaker. Re-sending that makes the model hear
+                # itself -> repeat storms + rising squeal. Drop quiet mic
+                # chunks during playback; LOUD speech still punches through
+                # (barge-in) and the server interrupt flushes playback.
+                try:
+                    if self.audio.played_recently(0.25):
+                        try:
+                            import numpy as _npg
+                            _rms = float(_npg.sqrt(_npg.mean(_npg.frombuffer(chunk, dtype=_npg.int16).astype(_npg.float32) ** 2)))
+                        except Exception:
+                            _rms = 0.0
+                        if _rms < 2500.0:
+                            try:
+                                _g = int(getattr(self, "_mic_gated_n", 0) or 0)
+                                if _g % 100 == 0:
+                                    print(f"[GeminiLive] mic gated during playback (feedback guard, rms={_rms:.0f})")
+                                self._mic_gated_n = _g + 1
+                            except Exception:
+                                pass
+                            continue
+                except Exception:
+                    pass
                 self._session_tokens += max(1, int(len(chunk) / 320))
                 try:
                     self.token_usage_updated.emit(self._session_tokens, self.MAX_CONTEXT_TOKENS)
@@ -1494,74 +2008,156 @@ class GeminiLiveManager(QObject):
         try:
             fps = config_vault.get_screen_fps()
         except Exception:
-            fps = 1.5
+            fps = 3.0
         send_failures = 0
         frames_sent = 0
+        dropped_static = 0
         empty_streak = 0
         blank_warned = False
+        prev_thumb = None
         try:
-            # Drive pacing here; capture offloaded so the event loop never blocks on
-            # mss grab + PIL resize + JPEG encode (HiDPI/4K can cost 50-400ms/frame).
-            interval = 1.0 / max(0.2, min(2.0, float(fps)))
-            try:
-                self.screen.start()
-            except Exception:
-                pass
-            loop = asyncio.get_running_loop()
+            import time as _time
+            last_send_ts = 0.0
+        except Exception:
+            last_send_ts = 0.0
+        recoveries = 0
+        try:
             while self._is_active and self.session and self._screen_enabled:
                 try:
-                    jpeg_bytes = await loop.run_in_executor(None, self.screen.capture_frame_bytes)
-                except Exception as e:
-                    print(f"[GeminiLive] Screen capture error: {e}")
-                    await asyncio.sleep(interval)
-                    continue
-                if not self._is_active or not self.session or not self._screen_enabled:
-                    break
-                if not jpeg_bytes:
-                    empty_streak += 1
-                    if empty_streak >= 10 and not blank_warned:
-                        blank_warned = True
+                    # Steady live vision: sample fast for change detection, but SEND at
+                    # a server-friendly pace so the model never goes blind mid-session.
+                    # - Static screen: 1 fps heartbeat.
+                    # - Changing screen: at most 1 frame per 0.5 s (reacts within half
+                    #   a second, never floods). Faster bursts got throttled server-side,
+                    #   which is exactly the "sees, then goes blind" failure.
+                    # Raw 15 fps x 1120 tok would also kill 131k context in seconds.
+                    # Capture stays offloaded so the event loop never blocks on
+                    # mss grab + PIL resize + JPEG encode.
+                    interval = 1.0 / max(0.2, min(15.0, float(fps)))
+                    sample_gap = max(interval, 0.15)
+                    min_send_gap = 0.5
+                    heartbeat = 1.0
+                    try:
+                        self.screen.start()
+                    except Exception:
+                        pass
+                    # Refresh a stale permission gate once at session start so one
+                    # old failure can't blank the whole session (throttled inside).
+                    try:
+                        self.screen.check_permission()
+                    except Exception:
+                        pass
+                    try:
+                        import time as _t2
+                        self._screen_loop_ts = _t2.monotonic()
+                    except Exception:
+                        pass
+                    loop = asyncio.get_running_loop()
+                    while self._is_active and self.session and self._screen_enabled:
                         try:
-                            self.error_occurred.emit("Screen capture is returning blank frames — check display connection/permissions. Voice continues.")
-                            self.status_changed.emit("Screen blank — voice continues", "warn")
+                            jpeg_bytes, thumb = await loop.run_in_executor(None, self.screen.capture_frame)
+                        except Exception as e:
+                            print(f"[GeminiLive] Screen capture error: {e}")
+                            await asyncio.sleep(sample_gap)
+                            continue
+                        if not self._is_active or not self.session or not self._screen_enabled:
+                            break
+                        if not jpeg_bytes:
+                            empty_streak += 1
+                            if empty_streak == 5:
+                                # One live retry — transient lock/RDP blip, not a dead end
+                                try:
+                                    self.screen.check_permission()
+                                except Exception:
+                                    pass
+                            if empty_streak >= 10 and not blank_warned:
+                                blank_warned = True
+                                try:
+                                    self.error_occurred.emit("Screen capture is returning blank frames — check display connection/permissions. Voice continues.")
+                                    self.status_changed.emit("Screen blank — voice continues", "warn")
+                                except Exception:
+                                    pass
+                            await asyncio.sleep(sample_gap)
+                            continue
+                        empty_streak = 0
+                        try:
+                            now_ts = _time.monotonic()
+                        except Exception:
+                            now_ts = 0.0
+                        try:
+                            changed = self.screen.frame_changed(prev_thumb, thumb)
+                        except Exception:
+                            changed = True
+                        prev_thumb = thumb
+                        # Pace sends: heartbeat for still screens, 0.5 s min gap live.
+                        # Unchanged frames inside the heartbeat are skipped (saves context).
+                        if (now_ts - last_send_ts) < min_send_gap:
+                            await asyncio.sleep(sample_gap)
+                            continue
+                        if not changed and (now_ts - last_send_ts) < heartbeat:
+                            dropped_static += 1
+                            await asyncio.sleep(sample_gap)
+                            continue
+                        try:
+                            last_send_ts = now_ts
                         except Exception:
                             pass
-                    await asyncio.sleep(interval)
-                    continue
-                empty_streak = 0
-                self._session_tokens += 258
-                try:
-                    self.token_usage_updated.emit(self._session_tokens, self.MAX_CONTEXT_TOKENS)
-                except Exception:
-                    pass
-                try:
-                    await self.session.send_realtime_input(video=types.Blob(data=jpeg_bytes, mime_type="image/jpeg"))
-                    send_failures = 0
-                    frames_sent += 1
-                    if frames_sent == 1 or frames_sent % 45 == 0:
-                        print(f"[GeminiLive] Screen frames sent: {frames_sent} ({len(jpeg_bytes)} bytes last)")
-                except Exception:
-                    try:
-                        await self.session.send(input={"data": jpeg_bytes, "mime_type": "image/jpeg"})
-                        send_failures = 0
-                        frames_sent += 1
-                    except Exception as e:
-                        send_failures += 1
-                        print(f"[GeminiLive] Screen send error ({send_failures}): {e}")
-                        if send_failures >= 20:
-                            # Give up on video, keep voice alive — never kill the session over screen.
+                        self._session_tokens += _screen_frame_tokens()
+                        try:
+                            self.token_usage_updated.emit(self._session_tokens, self.MAX_CONTEXT_TOKENS)
+                        except Exception:
+                            pass
+                        try:
+                            await self.session.send_realtime_input(video=types.Blob(data=jpeg_bytes, mime_type="image/jpeg"))
+                            send_failures = 0
+                            frames_sent += 1
+                            if frames_sent == 1:
+                                try:
+                                    self.status_changed.emit("Companion Live + Screen — agent can see", "active")
+                                except Exception:
+                                    pass
+                                print(f"[GeminiLive] Screen LIVE first frame ({len(jpeg_bytes)} bytes)")
+                            elif frames_sent % 20 == 0:
+                                try:
+                                    elapsed = max(1.0, now_ts - float(getattr(self, "_screen_loop_ts", now_ts) or now_ts))
+                                except Exception:
+                                    elapsed = 1.0
+                                print(f"[GeminiLive] Screen flowing: {frames_sent} frames, {frames_sent / elapsed:.1f}/s effective, {len(jpeg_bytes)} bytes last, skipped-static: {dropped_static}")
+                        except Exception:
                             try:
-                                self.status_changed.emit("Screen unavailable — voice continues", "warn")
-                            except Exception:
-                                pass
-                            return
-                        await asyncio.sleep(0.25)
-                        continue
-                await asyncio.sleep(interval)
+                                await self.session.send(input={"data": jpeg_bytes, "mime_type": "image/jpeg"})
+                                send_failures = 0
+                                frames_sent += 1
+                            except Exception as e:
+                                send_failures += 1
+                                print(f"[GeminiLive] Screen send error ({send_failures}): {e}")
+                                if send_failures == 10 and not blank_warned:
+                                    # Early, honest, but NOT terminal — keep retrying below.
+                                    try:
+                                        self.status_changed.emit("Screen hiccup — retrying, voice continues", "warn")
+                                    except Exception:
+                                        pass
+                                # Back off with pressure instead of quitting: a 7-second
+                                # blip used to kill vision for the whole session.
+                                await asyncio.sleep(min(8.0, 0.5 * send_failures))
+                                continue
+                        await asyncio.sleep(sample_gap)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # Never die silently mid-session: cool down and retry
+                    # while the session is still live (iterative, no recursion).
+                    recoveries += 1
+                    print(f"[GeminiLive] Screen loop error (recovering #{recoveries}): {e}")
+                    try:
+                        await asyncio.sleep(min(10.0, 1.0 * recoveries))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                    continue
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            print(f"[GeminiLive] Screen loop error: {e}")
         finally:
             try:
                 if getattr(self, "_screen_task", None) is asyncio.current_task():
@@ -1806,7 +2402,14 @@ class GeminiLiveManager(QObject):
                 pass
             for d, t in seen:
                 if d == digest and now - t < 10.0:
-                    print("[GeminiLive] Duplicate reply chunk skipped (echo guard)")
+                    # Throttled: retransmit storms print one line per 25 skips.
+                    try:
+                        _s = int(getattr(self, "_dup_skip_n", 0) or 0) + 1
+                        self._dup_skip_n = _s
+                        if _s % 25 == 1:
+                            print(f"[GeminiLive] Duplicate reply chunks skipped (echo guard, n={_s})")
+                    except Exception:
+                        pass
                     return True
             seen.append((digest, now))
             self._played_hashes = seen[-32:]
@@ -1825,6 +2428,19 @@ class GeminiLiveManager(QObject):
                 self.status_changed.emit("Speaker issue — reply dropped", "warn")
             except Exception:
                 pass
+        # Path audit: first chunks per session + every 100th (diagnose doubling/chop)
+        try:
+            _n = int(getattr(self, "_audio_diag_n", 0) or 0)
+            if _n < 8 or _n % 100 == 0:
+                import hashlib as _hl2
+                try:
+                    _q = self.audio._play_queue.qsize()
+                except Exception:
+                    _q = -1
+                print(f"[GeminiLive] reply-audio #{_n}: {len(raw)}B sha={_hl2.sha1(raw).hexdigest()[:8]} queue={_q}")
+            self._audio_diag_n = _n + 1
+        except Exception:
+            pass
         return bool(ok)
 
     async def _receive_companion_loop(self):
@@ -1855,31 +2471,47 @@ class GeminiLiveManager(QObject):
 
     def _handle_companion_response(self, response):
         """Route one Live response: audio -> speaker, text -> status (never silent)."""
-        # Tool calls (typeTextAtCursor) can arrive top-level or inside server_content.
+        # Tool calls (typing + screen control + memory) can arrive top-level.
         # Schedule async handler without blocking the audio path.
         try:
             tc = getattr(response, "tool_call", None)
             if tc and getattr(tc, "function_calls", None):
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(self.handle_type_text_tool_call(tc))
+                    loop.create_task(self.handle_any_tool_call(tc))
                 except RuntimeError:
                     loop2 = getattr(self, "_loop", None)
                     if loop2 is not None:
                         try:
-                            asyncio.run_coroutine_threadsafe(self.handle_type_text_tool_call(tc), loop2)
+                            asyncio.run_coroutine_threadsafe(self.handle_any_tool_call(tc), loop2)
                         except Exception:
                             pass
         except Exception:
             pass
-        # Top-level raw audio payload (SDK variant)
+        # Audio source rule: parts[] is the documented source. The SDK also
+        # exposes response.data (a convenience CONCAT of the same part bytes),
+        # so playing both would double every chunk whenever boundaries differ.
+        # Play parts when present; top-level data is fallback-only.
+        srv = getattr(response, "server_content", None)
+        _has_inline_audio = False
         try:
-            raw_data = getattr(response, "data", None)
-            if raw_data:
-                self._play_response_audio(raw_data)
+            _mt = getattr(srv, "model_turn", None)
+            if _mt is not None:
+                for _p in getattr(_mt, "parts", None) or []:
+                    _il = getattr(_p, "inline_data", None)
+                    if _il is not None and getattr(_il, "data", None):
+                        _has_inline_audio = True
+                        break
         except Exception:
             pass
-        srv = getattr(response, "server_content", None)
+        if not _has_inline_audio:
+            # Fallback only: server variants with no model_turn audio parts.
+            try:
+                raw_data = getattr(response, "data", None)
+                if raw_data:
+                    self._play_response_audio(raw_data)
+            except Exception:
+                pass
         if srv is None:
             return
         # Transcribed speech (when output_audio_transcription negotiated)
@@ -1906,7 +2538,26 @@ class GeminiLiveManager(QObject):
                         self.status_changed.emit("Speaking...", "active")
                 except Exception:
                     pass
-        # Server interruptions / turn-complete: return status to listening
+        # Server interruptions / interaction lifecycle: extended-thinking
+        # streams fillers with turnComplete+IN_PROGRESS; only IDLE ends work.
+        try:
+            istatus = str(getattr(srv, "interaction_status", "") or "").upper()
+            if istatus:
+                try:
+                    last = getattr(self, "_last_interaction_status", None)
+                except Exception:
+                    last = None
+                if istatus != last:
+                    try:
+                        self._last_interaction_status = istatus
+                    except Exception:
+                        pass
+                    if "PROGRESS" in istatus:
+                        self.status_changed.emit("Working…", "active")
+                    elif "IDLE" in istatus:
+                        self._emit_companion_status()
+        except Exception:
+            pass
         try:
             if getattr(srv, "interrupted", False):
                 # Drop not-yet-played stale audio so the old turn never overlaps

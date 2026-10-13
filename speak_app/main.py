@@ -18,6 +18,71 @@ from src.ui.settings_dialog import SettingsDialog
 from src.ui.window_effects import enable_rounded_corners
 
 
+class _Tee:
+    """Split stdout/stderr to console + log file (never raises)."""
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, data):
+        for s in self._streams:
+            try:
+                s.write(data)
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+
+def _install_file_logging():
+    """Tee console to %APPDATA%/SPEAK_AI/logs/speak-<stamp>.log (keep last 5).
+
+    Real diagnostics beat symptom descriptions: after any failure, open the
+    newest log and search [GeminiLive] / [ScreenEngine] / [AudioEngine].
+    """
+    try:
+        import datetime as _dt
+        from src.config import CONFIG_DIR
+        logdir = CONFIG_DIR / "logs"
+        try:
+            logdir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return None
+        try:
+            olds = sorted(logdir.glob("speak-*.log"), key=lambda p: p.stat().st_mtime)
+            for p in olds[:-4]:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            fh = open(logdir / f"speak-{stamp}.log", "w", encoding="utf-8", buffering=1)
+        except Exception:
+            return None
+        try:
+            sys.stdout = _Tee(sys.stdout, fh)
+            sys.stderr = _Tee(sys.stderr, fh)
+        except Exception:
+            pass
+        try:
+            print(f"[Log] writing to {fh.name}")
+        except Exception:
+            pass
+        return str(fh.name)
+    except Exception:
+        return None
+
+
 def apply_stylesheet(app: QApplication):
     qss = ASSETS_DIR / "capsule_style.qss"
     if qss.exists():
@@ -100,6 +165,41 @@ def show_capsule(capsule: FloatingCapsuleWidget, app: QApplication):
     QTimer.singleShot(180, _reclamp)
 
 
+def show_mini(capsule: FloatingCapsuleWidget, app: QApplication):
+    """Primary reveal: the mini pill first (click/max expands to full).
+
+    Same window, no recreation — minimize_to_mini only swaps which chrome
+    is visible, so focus and session state survive the transition.
+    """
+    from PySide6.QtCore import QTimer
+    try:
+        if not capsule.isVisible():
+            position_capsule(capsule, app)
+            capsule.show()
+            capsule.raise_()
+    except Exception:
+        pass
+    try:
+        capsule.minimize_to_mini()
+    except Exception:
+        pass
+    try:
+        position_capsule(capsule, app)
+    except Exception:
+        pass
+    def _reclamp():
+        try:
+            position_capsule(capsule, app)
+        except Exception:
+            pass
+        try:
+            capsule.update()
+        except Exception:
+            pass
+    QTimer.singleShot(60, _reclamp)
+    QTimer.singleShot(180, _reclamp)
+
+
 def center_window_on_screen(window, app: QApplication):
     """Centers any window/dialog on the primary screen available geometry."""
     screen = app.primaryScreen()
@@ -135,13 +235,22 @@ async def main_async(app: QApplication):
     except Exception:
         pass
 
-    # 1c. Proactive permission handshake BEFORE mss / screen worker init
+    # 1c. Proactive permission handshake BEFORE mic/screen worker init.
+    # Screen AND microphone are both checked so the app never sends blank
+    # frames or dead mic audio silently.
     try:
         perm_status = screen.check_permission()
         print(f"[Main] Screen permission pre-check: {perm_status}")
     except Exception as e:
         perm_status = "pending"
         print(f"[Main] Permission pre-check note: {e}")
+    try:
+        from src.permission_manager import mic_permission_manager as _mic_pm
+        mic_status = _mic_pm.check_permission()
+        print(f"[Main] Mic permission pre-check: {mic_status}")
+    except Exception as e:
+        mic_status = "pending"
+        print(f"[Main] Mic pre-check note: {e}")
 
     # 2. UI Components — main window launches natively fullscreen (maximized)
     capsule = FloatingCapsuleWidget()
@@ -196,10 +305,22 @@ async def main_async(app: QApplication):
             settings_dialog.show()
         except Exception:
             pass
-    # Surface permission banner immediately if handshake did not grant
+    # Surface permission banner immediately if handshake did not grant.
+    # Screen takes priority; mic shows when screen is fine but mic is blocked.
     try:
         diag = screen.permission_diagnostic()
-        settings_dialog.update_permission_banner(diag.get("status", perm_status), diag.get("banner_text", "") or diag.get("last_error", ""))
+        st = diag.get("status", perm_status)
+        if st in ("granted", "unknown") and mic_status in ("denied", "pending"):
+            try:
+                from src.permission_manager import mic_permission_manager as _mpm2
+                merr = _mpm2.last_error
+            except Exception:
+                merr = ""
+            settings_dialog.update_permission_banner(
+                mic_status,
+                ("Microphone denied — dictation and companion cannot hear you. Click Grant Permission, allow mic access, then Grant again." if mic_status == "denied" else "Microphone permission pending — waiting for OS approval.") + (f" ({merr[:100]})" if merr else ""))
+        else:
+            settings_dialog.update_permission_banner(st, diag.get("banner_text", "") or diag.get("last_error", ""))
     except Exception:
         try:
             settings_dialog.update_permission_banner(perm_status, "")
@@ -223,6 +344,13 @@ async def main_async(app: QApplication):
                 except Exception as e:
                     st = "pending"
                     print(f"[Main] grant note: {e}")
+                # Mic rides along: one Grant click requests both permissions
+                try:
+                    from src.permission_manager import mic_permission_manager as _mpm
+                    _mst = _mpm.request_permission()
+                    print(f"[Main] Mic grant result: {_mst}")
+                except Exception as e:
+                    print(f"[Main] mic grant note: {e}")
                 try:
                     from PySide6.QtCore import QMetaObject as _QM, Qt as _Qt, Q_ARG as _QA
                     # Marshal back to GUI thread via signal-safe call
@@ -280,7 +408,7 @@ async def main_async(app: QApplication):
             pass
         # Don't auto-show capsule - user wants it only on shortcut
         # Just notify readiness
-        tray.notify("SPEAK Ready", "Settings saved! Press Ctrl + Space to dictate or Win+Shift for companion. Capsule will appear on hotkey.")
+        tray.notify("SPEAK Ready", "Settings saved! Press Ctrl + Space to dictate or Ctrl + / for companion. Capsule will appear on hotkey.")
         # Keep settings dialog hidden after save (user can reopen via tray/capsule)
         # Dialog already accepted/closed by SettingsDialog._save_and_close()
 
@@ -399,7 +527,7 @@ async def main_async(app: QApplication):
                     settings_dialog.chk_screen.blockSignals(False)
             except Exception:
                 pass
-            tray.notify("Live screen", "ON — sharing at ~1.5 fps" if gemini._screen_enabled else "OFF — voice only", 1500)
+            tray.notify("Live screen", "ON — live vision, bursts on change" if gemini._screen_enabled else "OFF — voice only", 1500)
         except Exception as e:
             print(f"[Main] capsule screen toggle note: {e}")
     try:
@@ -414,25 +542,39 @@ async def main_async(app: QApplication):
     except Exception:
         pass
 
-    # 8. Hotkeys -> Reveal Capsule & Trigger AI (taskbar-aware)
-    # Ctrl+Space dictation, Win+Shift companion, Ctrl+Win purge,
-    # Ctrl+Tab spawns + switches to a new live session immediately.
-    # All triggers use show_capsule() for correct sizing.
+    # 8. Hotkeys -> Reveal MINI Capsule & Trigger AI (taskbar-aware)
+    # Ctrl+Space dictation, Ctrl+/ companion, Ctrl+Win purge,
+    # Ctrl+Tab spawns + switches to a new live session, Esc stops live only.
+    # All triggers open the mini pill first; click/max expands to full.
     def trigger_dictation():
-        show_capsule(capsule, app)
+        show_mini(capsule, app)
         capsule.activateWindow()
         loop.create_task(gemini.start_dictation_mode())
 
     def trigger_companion():
-        show_capsule(capsule, app)
+        show_mini(capsule, app)
         capsule.activateWindow()
         loop.create_task(gemini.start_companion_mode())
 
     def trigger_purge():
-        # Show capsule briefly to give feedback even if it was hidden
-        show_capsule(capsule, app)
+        # Show mini briefly to give feedback even if it was hidden
+        show_mini(capsule, app)
         capsule.activateWindow()
         loop.create_task(gemini.purge_and_hard_reset())
+
+    def trigger_stop_live():
+        # Esc: stop whatever is live (dictation/companion) — app keeps running.
+        try:
+            if not getattr(gemini, "_is_active", False):
+                return
+        except Exception:
+            return
+        print("[Main] Esc -> stop live session only")
+        loop.create_task(gemini.stop_session())
+        try:
+            tray.notify("Stopped", "Live session stopped (Esc). App keeps running in tray.", 2000)
+        except Exception:
+            pass
 
     def trigger_new_session():
         """Ctrl+Tab: immediately spawn + switch to a new live session."""
@@ -453,7 +595,7 @@ async def main_async(app: QApplication):
             except Exception:
                 pass
             await asyncio.sleep(0.25)
-            show_capsule(capsule, app)
+            show_mini(capsule, app)
             try:
                 capsule.activateWindow()
             except Exception:
@@ -478,6 +620,10 @@ async def main_async(app: QApplication):
     hotkeys.sig_purge_reset.connect(trigger_purge)
     try:
         hotkeys.sig_new_session.connect(trigger_new_session)
+    except Exception:
+        pass
+    try:
+        hotkeys.sig_stop_live.connect(trigger_stop_live)
     except Exception:
         pass
     hotkeys.start()
@@ -519,7 +665,7 @@ async def main_async(app: QApplication):
         if capsule.isVisible():
             capsule.hide()
         else:
-            show_capsule(capsule, app)
+            show_mini(capsule, app)
             capsule.activateWindow()
 
     tray.toggle_capsule_requested.connect(toggle_capsule)
@@ -548,6 +694,40 @@ async def main_async(app: QApplication):
     # Delay notify slightly so tray is registered on Windows
     await asyncio.sleep(0.6)
     tray.notify("SPEAK Running", "Settings window is open. Capsule is hidden until you press Ctrl+Space. Find SPEAK in system tray.")
+    # Loud permission verdicts (never silent blank frames / dead mic)
+    try:
+        if mic_status in ("denied", "pending"):
+            await asyncio.sleep(0.4)
+            tray.notify("Microphone blocked", "Allow mic access: Settings will offer Grant, or open Windows Privacy > Microphone.", 4500)
+    except Exception:
+        pass
+    try:
+        if perm_status in ("denied", "pending"):
+            await asyncio.sleep(0.4)
+            tray.notify("Screen blocked", "Live vision paused — click Grant Permission in Settings.", 4500)
+    except Exception:
+        pass
+    # Unmissable ask: modal permission dialog when mic or screen is blocked.
+    # (A banner alone was overlooked — blank vision with no prompt.)
+    try:
+        if mic_status in ("denied", "pending") or perm_status in ("denied", "pending"):
+            from src.ui.permission_dialog import PermissionAskDialog
+            dlg = PermissionAskDialog(settings_dialog)
+            try:
+                dlg.exec()
+            except Exception:
+                try:
+                    dlg.show()
+                except Exception:
+                    pass
+            # Re-read verdicts after the user grants/closes
+            try:
+                diag = screen.permission_diagnostic()
+                settings_dialog.update_permission_banner(diag.get("status", perm_status), diag.get("banner_text", "") or diag.get("last_error", ""))
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[Main] permission modal note: {e}")
 
     # Keep event loop alive forever (qasync requires this)
     while True:
@@ -555,6 +735,11 @@ async def main_async(app: QApplication):
 
 
 def main():
+    # File log first: every run leaves evidence at %APPDATA%/SPEAK_AI/logs/.
+    try:
+        _install_file_logging()
+    except Exception:
+        pass
     # Must be called before QApplication is created per Qt docs
     try:
         from PySide6.QtGui import QGuiApplication
@@ -621,9 +806,13 @@ def main():
         except (KeyboardInterrupt, SystemExit):
             pass
         except Exception as e:
-            print(f"[Main] Fatal error: {e}")
-            import traceback
-            traceback.print_exc()
+            _msg = str(e)
+            if "Event loop stopped before Future completed" in _msg:
+                pass  # benign qasync teardown race on app exit, not a failure
+            else:
+                print(f"[Main] Fatal error: {e}")
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == "__main__":

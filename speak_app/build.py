@@ -84,12 +84,18 @@ def preflight_checks() -> bool:
     if not ICON_PATH.exists():
         print("[Preflight] FAIL: icon.ico missing")
         ok = False
-    # 6. Embedded key present (masked only)
+    # 6. Embedded key present (masked only). NOTE: OAuth-style embedded tokens
+    # (AQ.Ab…/ya29…) expire in ~1h and fail with 401 — the installer MUST be
+    # used with a user BYOK from AI Studio. Never claim one-click free-tier
+    # unless the embedded value is a long-lived AIza key.
     try:
         from src._embedded_key import get_embedded_key
         ek = get_embedded_key()
         if ek:
-            print(f"[Preflight] Embedded free-tier key present (len {len(ek)}) — installer works with no user key")
+            if str(ek).startswith("AIza"):
+                print(f"[Preflight] Embedded key present (len {len(ek)}, AIza shape) — installer may work with no user key")
+            else:
+                print(f"[Preflight] WARNING: embedded key present but non-AIza shape (len {len(ek)}) — likely expired OAuth; installer will REQUIRE user BYOK in Settings > Setup")
         else:
             print("[Preflight] WARNING: embedded key empty — installer will REQUIRE user key (not one-click)")
     except Exception as e:
@@ -100,10 +106,12 @@ def preflight_checks() -> bool:
 def try_sign_exe(exe_path: Path):
     """Best-effort signing (no cert = note + continue). Never blocks distribution."""
     pfx = None
-    for cand in [BASE_DIR / "cert.pfx", BASE_DIR / "amir.pfx", Path(os.getenv("CERT_PATH", ""))]:
+    for cand in [BASE_DIR / "cert.pfx", BASE_DIR / "amir.pfx", Path(os.getenv("CERT_PATH", "") or "")]:
         try:
-            if cand and str(cand) and Path(cand).exists():
-                pfx = Path(cand)
+            p = Path(cand)
+            # Must be a real .pfx FILE (Path("") resolves to cwd — never accept that).
+            if p.suffix.lower() == ".pfx" and p.is_file():
+                pfx = p
                 break
         except Exception:
             continue
@@ -111,12 +119,21 @@ def try_sign_exe(exe_path: Path):
         note = BASE_DIR / "dist" / "SIGNING_NOTE.txt"
         try:
             note.write_text("SPEAK v2.1 by Amir Bagawan\nUnsigned build - no pfx found.\nTo sign: place cert.pfx next to build.py and re-run.\nCmd: signtool sign /fd SHA256 /f cert.pfx /p password dist\\SPEAK.exe\n", encoding="utf-8")
-            print(f"[Sign] No cert.pfx — wrote {note} (VersionInfoCompany=Amir Bagawan still stamped)")
+            print(f"[Sign] No cert.pfx — shipping unsigned (VersionInfoCompany=Amir Bagawan still stamped)")
         except Exception:
             pass
         return False
+    # Only attempt signers that actually exist — no scary "not found" spam.
+    import shutil as _sh
+    signtools = [st for st in (r"C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe",
+                               r"C:\Program Files\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\signtool.exe")
+                 if Path(st).is_file()]
+    if _sh.which("signtool"):
+        signtools.append("signtool")
+    if not signtools:
+        print("[Sign] cert.pfx present but no signtool installed — shipping unsigned")
+        return False
     pwd = os.getenv("CERT_PASSWORD", "")
-    signtools = [r"C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe", r"C:\Program Files\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\signtool.exe", "signtool"]
     for st in signtools:
         try:
             cmd = [st, "sign", "/fd", "SHA256", "/f", str(pfx), "/tr", "http://timestamp.digicert.com", "/td", "SHA256", str(exe_path)]
@@ -140,6 +157,8 @@ def run_iscc() -> bool:
     candidates = [
         r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         r"C:\Program Files\Inno Setup 6\ISCC.exe",
+        os.path.join(os.getenv("LOCALAPPDATA", ""), r"Programs\Inno Setup 6\ISCC.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
         "iscc",
     ]
     iss = BASE_DIR / "installer.iss"
@@ -202,6 +221,7 @@ def build_executable(with_installer: bool = False):
         "--hidden-import=src.injection_service",
         "--hidden-import=src.session_manager",
         "--hidden-import=src.permission_manager",
+        "--hidden-import=src.memory_store",
         "--hidden-import=src.config",
         "--hidden-import=src.gemini_client",
         "--collect-all=google.genai",
@@ -210,9 +230,20 @@ def build_executable(with_installer: bool = False):
         "--exclude-module=matplotlib",
         "--exclude-module=scipy",
         "--exclude-module=pandas",
+        # Silence known-harmless "not found" warnings (absent optionals /
+        # runtime-generated tables — excluding them changes nothing, since
+        # PyInstaller already skips files that do not exist):
+        "--exclude-module=google.genai.tests",
+        "--exclude-module=pycparser.lextab",
+        "--exclude-module=pycparser.yacctab",
+        "--exclude-module=tzdata",
+        "--exclude-module=pkg_resources",
         # NOTE: no --strip — it needs GNU strip.exe (absent on Windows) and only
         # produced 8 scary but harmless "Failed to run strip" tracebacks.
         "--optimize=1",
+        # Clean console: only real errors print (the full warning log is still
+        # written to build/SPEAK/warn-SPEAK.txt for forensics).
+        "--log-level=ERROR",
         f"--version-file={str(VERSION_FILE)}",
         "--noconfirm",
         "--clean",
@@ -220,7 +251,15 @@ def build_executable(with_installer: bool = False):
         str(BASE_DIR / "main.py"),
     ]
     print(f"\n[Running] {' '.join(cmd)}\n")
-    result = subprocess.run(cmd, cwd=str(BASE_DIR))
+    # Silence third-party SyntaxWarnings (e.g. pyautogui's unused Linux-only
+    # x11 module) so the log reads clean — app code still warns normally.
+    try:
+        _env = dict(os.environ)
+        _prev = _env.get("PYTHONWARNINGS", "")
+        _env["PYTHONWARNINGS"] = ((_prev + ",") if _prev else "") + "ignore::SyntaxWarning"
+    except Exception:
+        _env = None
+    result = subprocess.run(cmd, cwd=str(BASE_DIR), env=_env)
     if result.returncode != 0:
         print("\n[Error] PyInstaller failed")
         sys.exit(result.returncode)
@@ -240,7 +279,7 @@ def build_executable(with_installer: bool = False):
     print(f" BUILD OK — {exe}")
     print(f" Size: {size_mb:.1f} MB")
     print(" Publisher: Amir Bagawan (VersionInfo stamped)")
-    print(" Hidden fallback key embedded (obfuscated) — works with no user key")
+    print(" NOTE: add your Gemini API key in Settings > Setup (BYOK required).")
     print("=" * 58)
     if with_installer:
         print("\n[Build] --installer: compiling Inno installer...")
@@ -258,6 +297,28 @@ def build_executable(with_installer: bool = False):
             sys.exit(3)
 
 
+def _ensure_venv_interpreter():
+    """build.py MUST run under speak_app\\venv (pinned deps: PySide 6.8.2,
+    PyInstaller 6.12.0, genai 2.22). A bare `py build.py` uses system Python
+    (3.14 + unpinned packages) and produces a bloated, wrong-deps exe with
+    scary warnings — so re-exec through the venv automatically instead of
+    failing or misbuilding. Never raises out (falls through on odd setups).
+    """
+    try:
+        here = Path(__file__).resolve().parent
+        venv_py = here / "venv" / "Scripts" / "python.exe"
+        if venv_py.exists() and Path(sys.executable).resolve() != venv_py.resolve():
+            print(f"[Build] Redirecting to project venv: {venv_py}")
+            print(f"[Build] (you ran: {sys.executable})")
+            r = subprocess.run([str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
+            sys.exit(r.returncode)
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"[Build] venv redirect note: {e} — continuing with {sys.executable}")
+
+
 if __name__ == "__main__":
+    _ensure_venv_interpreter()
     with_installer = "--installer" in sys.argv or "/installer" in sys.argv
     build_executable(with_installer=with_installer)

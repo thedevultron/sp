@@ -6,6 +6,9 @@ SPEAK works out of the box — no key needed (free tier active). For unlimited u
 add your own Gemini API key in Settings > Setup > Primary API key.
 
 QUICK START
+0. WINDOWS MAY WARN "Unknown publisher" — this build is unsigned (normal for
+   new independent software). Click "More info" > "Run anyway", once per
+   version. Nothing is installed silently: Start Menu + optional Desktop icons.
 1. Double-click SPEAK_Setup_v2.1.exe and follow the wizard (no admin needed).
 2. Launch SPEAK from Start Menu or Desktop (if you checked the box).
    Settings opens natively fullscreen with a collapsible sidebar.
@@ -16,22 +19,37 @@ QUICK START
    Press Ctrl + Space again to stop.
 5. Press Ctrl + Tab to spawn + switch to a new live session instantly.
    Sessions tab shows active count + stored metadata; oldest evicts first (FIFO, default Max 5).
-6. Press Win + Shift for companion (voice + optional screen). Toggle screen in the capsule.
-7. Press Ctrl + Win to clear memory.
+6. Press Ctrl + / for companion (voice + optional screen). Toggle screen in the capsule.
+7. Press Ctrl + Win to clear memory. Press Esc to stop live only (app keeps running).
 
-SCREEN PERMISSION
-- On first screen share, SPEAK checks OS permission BEFORE starting capture.
-- If pending/denied, a banner appears in Settings with a Grant Permission button.
+PERMISSIONS (asked on first run — installer cannot grant these, Windows requires in-app approval)
+- MICROPHONE: on launch SPEAK checks mic access. If blocked you get a tray
+  alert + Settings banner. Click Grant Permission (opens Windows Privacy >
+  Microphone), allow access, then Grant again to retry.
+- SCREEN: on first screen share, SPEAK checks OS permission BEFORE starting capture.
+  If pending/denied, a banner appears in Settings with a Grant Permission button.
   Click it to trigger the native OS prompt, approve, then click again to retry.
-- Voice continues even when screen is blocked.
+  One Grant click requests BOTH mic and screen.
+- Voice continues even when screen is blocked. Dictation needs the mic.
+- Blank frames from the AI means permission is still blocked — fix it here first.
 
 MESSAGE VERIFICATION (Settings > Preferences)
-- Verification Active (default): requireVerification=True, autoSubmit=False — type, wait for Enter.
-- Auto-Send: requireVerification=False, autoSubmit=True — type + Enter automatically.
-- Live locks enforced: Transcription SMART, Thinking HIGH, tool typeTextAtCursor.
+- Auto-Send (default): requireVerification=False, autoSubmit=True — type + Enter automatically.
+- Verification Active (opt-in): requireVerification=True, autoSubmit=False — type, wait for Enter.
+- Agent reasoning: Low / Medium (default) / High (Settings > Preferences > Agent Reasoning).
+- Live locks enforced: Transcription SMART, tool typeTextAtCursor.
+
+SELF-TESTS (Settings > Preferences)
+- Microphone card > Test speaker: plays a two-tone beep through the real
+  reply path. Clear beep = speaker wiring correct.
+- Live Screen card > Test capture: grabs one frame, shows KB size + tokens.
+  Proves vision frames actually flow. Blank = permission still blocked.
+- If anything misbehaves, open %APPDATA%\SPEAK_AI\logs\ and send the newest
+  speak-*.log — it records every session event.
 
 CAPSULE
-- Close-only pill, stays on top. Appears only on hotkey. Find SPEAK in tray near the clock.
+- Hotkeys open the mini pill first. Click it (or the maximize button) to expand
+  the full capsule. Close-only, stays on top. Appears only on hotkey. Find SPEAK in tray near the clock.
 - Transcript panel: copy, clear, refine/polish/elaborate + customs. Screen button toggles vision.
 - Status text elides gracefully, full text in tooltip. Panel never slides under taskbar.
 

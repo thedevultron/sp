@@ -112,32 +112,41 @@ class ConfigManager:
         # 'expand' kept as a legacy alias for elaborate (backward compat).
         "elaborate": ["elaborate", "expand"],
     }
-    # Models - Gemini 3 Flash Live primary for companion, 3.1 preview backup
+    # Models - Companion primary is plain Live: it emits tool calls instantly
+    # (typeTextAtCursor + pc_* verified live) and describes the screen. The
+    # Extended Thinking model narrates but does not emit tool calls in this
+    # SDK setup, so it serves as reasoning backup only. Refine is Flash-Lite.
+    # Companion types + sends via typeTextAtCursor
+    # and drives the desktop via pc_* tools (see src/pc_control.py).
     DEFAULT_CONFIG = {
         "dictation_model": "gemini-3.5-transcribe-live",
-        "companion_model": "gemini-3-flash-live",
-        "companion_backup_model": "gemini-3.1-flash-live-preview",
+        "companion_model": "gemini-3.8-live",
+        "companion_backup_model": "gemini-3.8-live-extended-thinking",
         "refine_model": "gemini-3.5-flash-lite",
         "refine_fallback_model": "gemini-3.1-flash-lite",
-        "temperature": 0.3,
+        "temperature": 0.2,
         "top_p": 0.95,
         "thinking_budget": 0,
-        # Live configuration locks (do not expose as free text — enforced in client)
-        "live_thinking_level": "HIGH",
+        # Agent reasoning depth (Settings > Agent Reasoning, default MEDIUM).
+        # Extended-thinking models accept LOW / MEDIUM / HIGH (MINIMAL unsupported).
+        "live_thinking_level": "MEDIUM",
+        # Transcription stays SMART-locked (enforced in client).
         "live_transcription_mode": "SMART",
-        # Message verification: verification_active (default) vs auto_send
-        "verification_mode": "verification_active",
+        # Screen frame detail: MEDIUM (560 tok/frame) or HIGH (1120 tok/frame).
+        "screen_detail": "MEDIUM",
+        # Message verification: auto_send (default, full authority) vs verification_active
+        "verification_mode": "auto_send",
         # Multi-session engine
         "max_stored_sessions": 5,
         "system_instruction": (
-            "You are SPEAK, a fast, highly intelligent real-time companion and transcriber. "
+            "You are Voxula AI, a fast, highly intelligent real-time companion and transcriber. "
             "In dictation mode: output clean, punctuated transcribed text directly. "
-            "In companion mode: deliver concise, insightful, natural responses."
+            "In companion mode: deliver concise, insightful, natural responses — and operate the desktop by voice when asked."
         ),
         "windows_startup": False,
         "first_run_completed": False,
         "audio_device_index": None,
-        "screen_fps": 1.5,
+        "screen_fps": 3.0,
         "pen_color": "#0A84FF",
         "pen_width": 3,
         "auto_refine_replace": True,
@@ -171,54 +180,137 @@ class ConfigManager:
                 merged = dict(self.DEFAULT_CONFIG)
                 merged.update(data)
                 try:
-                    merged["temperature"] = float(merged.get("temperature", 0.3))
+                    merged["temperature"] = float(merged.get("temperature", 0.2))
+                    if abs(merged["temperature"] - 0.3) < 1e-9:
+                        merged["temperature"] = 0.2  # previous default; cooler = fewer hallucinations
                 except Exception:
-                    merged["temperature"] = 0.3
+                    merged["temperature"] = 0.2
                 try:
                     merged["top_p"] = float(merged.get("top_p", 0.95))
                 except Exception:
                     merged["top_p"] = 0.95
                 if "companion_backup_model" not in merged:
-                    merged["companion_backup_model"] = "gemini-3.1-flash-live-preview"
+                    merged["companion_backup_model"] = "gemini-3.8-live"
                 # Repair known-bad / retired Live model IDs (stored from older defaults).
                 # Never wipes user-custom values that are not on the bad list.
-                # Also upgrades the previous shipped default to Gemini 3 Flash Live.
+                # Plain Live is the acting primary (instant tool calls + vision,
+                # verified live); Extended Thinking is the reasoning backup.
+                # Older 3.1/3.0/invalid defaults map to plain Live.
+                # User-custom values are left untouched.
+                # One-time default flip: installs still on the previous
+                # default pair (extended primary + plain backup, never
+                # customized) move to the new default pair. Runs once.
                 try:
-                    if merged.get("companion_model") == "gemini-2.5-flash-live":
-                        merged["companion_model"] = "gemini-3-flash-live"
-                    merged["companion_model"] = self._repair_live_model(merged.get("companion_model"), "gemini-3-flash-live")
-                    merged["companion_backup_model"] = self._repair_live_model(merged.get("companion_backup_model"), "gemini-3.1-flash-live-preview")
+                    if not merged.get("_model_migrated_ext"):
+                        _cm0 = merged.get("companion_model")
+                        _bk0 = merged.get("companion_backup_model")
+                        if _cm0 == "gemini-3.8-live" and _bk0 == "gemini-3.8-live-extended-thinking":
+                            merged["companion_model"] = "gemini-3.8-live-extended-thinking"
+                            merged["companion_backup_model"] = "gemini-3.8-live"
+                        merged["_model_migrated_ext"] = True
+                except Exception:
+                    pass
+                # Verified-live flip (2026-09-26): extended-thinking narrates but
+                # does not emit tool calls in this SDK setup (proven across
+                # LOW/HIGH, 1/15 tools, text/realtime turns) while plain Live
+                # calls instantly. Installs on the old default pair move to
+                # plain primary + extended backup. Hand-customized IDs never
+                # matching the old pair are untouched. Runs once.
+                try:
+                    if not merged.get("_model_migrated_plain38"):
+                        _cm1 = merged.get("companion_model")
+                        _bk1 = merged.get("companion_backup_model")
+                        if _cm1 == "gemini-3.8-live-extended-thinking" and _bk1 == "gemini-3.8-live":
+                            merged["companion_model"] = "gemini-3.8-live"
+                            merged["companion_backup_model"] = "gemini-3.8-live-extended-thinking"
+                        merged["_model_migrated_plain38"] = True
+                except Exception:
+                    pass
+                try:
+                    if merged.get("companion_model") in ("gemini-3.1-flash-live-preview", "gemini-2.5-flash-live", "gemini-3-flash-live"):
+                        merged["companion_model"] = "gemini-3.8-live"
+                    merged["companion_model"] = self._repair_live_model(merged.get("companion_model"), "gemini-3.8-live")
+                    merged["companion_backup_model"] = self._repair_live_model(merged.get("companion_backup_model"), "gemini-3.8-live-extended-thinking")
+                    if merged.get("companion_backup_model") == merged.get("companion_model"):
+                        merged["companion_backup_model"] = "gemini-3.8-live" if merged["companion_model"] != "gemini-3.8-live" else "gemini-3.8-live-extended-thinking"
                     if merged.get("refine_fallback_model") in ("gemini-2.0-flash-lite", "gemini-2.0-flash"):
                         merged["refine_fallback_model"] = "gemini-3.1-flash-lite"
                 except Exception:
                     pass
-                # Clamp screen fps to Live-safe range; upgrade previous default to normal speed
+                # Live-feel range: sustained rate + motion bursts (see send loop).
+                # Frame cost is detail-aware now (MEDIUM 560 / HIGH 1120 tok on
+                # Gemini 3): 15 fps sustained x 1120 tok kills 131k context in
+                # seconds, so the loop change-gates: static screen heartbeats
+                # at ~1 fps, active screen bursts up to the configured rate.
                 try:
-                    _fps = float(merged.get("screen_fps", 1.5))
-                    if _fps == 1.0:
-                        _fps = 1.5
-                    merged["screen_fps"] = max(0.2, min(2.0, _fps))
+                    _fps = float(merged.get("screen_fps", 3.0))
+                    if _fps <= 1.0:
+                        _fps = 3.0  # upgrade legacy 1 fps slideshow default
+                    merged["screen_fps"] = max(0.2, min(15.0, _fps))
                 except Exception:
-                    merged["screen_fps"] = 1.5
+                    merged["screen_fps"] = 3.0
                 # ensure new keys exist without overwriting user
-                for k in ("refine_model", "refine_fallback_model", "auto_refine_replace", "transcript_autosave", "custom_words", "custom_mark", "enable_screen_share", "refine_prompts", "refine_triggers", "custom_actions", "verification_mode", "max_stored_sessions", "live_thinking_level", "live_transcription_mode"):
+                for k in ("refine_model", "refine_fallback_model", "auto_refine_replace", "transcript_autosave", "custom_words", "custom_mark", "enable_screen_share", "refine_prompts", "refine_triggers", "custom_actions", "verification_mode", "max_stored_sessions", "live_thinking_level", "live_transcription_mode", "screen_detail"):
                     if k not in merged:
                         merged[k] = self.DEFAULT_CONFIG[k]
+                # Drop retired Zen keys from older configs (feature removed).
+                for _zk in ("spark_model", "spark_effort", "spark_base_url", "spark_max_steps"):
+                    try:
+                        merged.pop(_zk, None)
+                    except Exception:
+                        pass
                 # clamp session + verification values (hardening: never trust stored file)
                 try:
                     merged["max_stored_sessions"] = max(1, min(20, int(merged.get("max_stored_sessions", 5))))
                 except Exception:
                     merged["max_stored_sessions"] = 5
                 try:
-                    if str(merged.get("verification_mode", "verification_active")).strip().lower() not in ("verification_active", "auto_send"):
-                        merged["verification_mode"] = "verification_active"
+                    if str(merged.get("verification_mode", "auto_send")).strip().lower() not in ("verification_active", "auto_send"):
+                        merged["verification_mode"] = "auto_send"
+                    elif str(merged.get("verification_mode", "")).strip().lower() == "verification_active":
+                        # Previous shipped default was verification_active; the
+                        # owner runs full-authority now — upgrade stored default.
+                        # Re-select it in Preferences any time to go back.
+                        merged["verification_mode"] = "auto_send"
                     else:
                         merged["verification_mode"] = str(merged.get("verification_mode")).strip().lower()
                 except Exception:
-                    merged["verification_mode"] = "verification_active"
-                # Live locks are absolute — stored values cannot downgrade them
-                merged["live_thinking_level"] = "HIGH"
+                    merged["verification_mode"] = "auto_send"
+                # Persona rebrand: stored old-default text upgrades to Voxula AI.
+                # User-edited instructions are never touched.
+                try:
+                    _old_persona = ("You are SPEAK, a fast, highly intelligent real-time companion and transcriber. "
+                        "In dictation mode: output clean, punctuated transcribed text directly. "
+                        "In companion mode: deliver concise, insightful, natural responses.")
+                    if str(merged.get("system_instruction", "")).strip() == _old_persona:
+                        merged["system_instruction"] = self.DEFAULT_CONFIG["system_instruction"]
+                except Exception:
+                    pass
+                # Thinking depth is user-selectable now (LOW / MEDIUM / HIGH,
+                # default MEDIUM). Only transcription stays absolutely locked.
+                # Upgrade rule: a stored HIGH that was never explicitly chosen
+                # (old lock imposed it) moves to MEDIUM. An explicit user
+                # choice (Settings save sets _thinking_explicit) always sticks.
+                try:
+                    _stored_high = str(merged.get("live_thinking_level", "")).strip().upper() == "HIGH"
+                    if not merged.get("_thinking_migrated_38") or (_stored_high and not merged.get("_thinking_explicit")):
+                        if _stored_high and not merged.get("_thinking_explicit"):
+                            merged["live_thinking_level"] = "MEDIUM"
+                        merged["_thinking_migrated_38"] = True
+                except Exception:
+                    pass
+                try:
+                    _tl = str(merged.get("live_thinking_level", "MEDIUM")).strip().upper()
+                    merged["live_thinking_level"] = _tl if _tl in ("LOW", "MEDIUM", "HIGH") else "MEDIUM"
+                except Exception:
+                    merged["live_thinking_level"] = "MEDIUM"
                 merged["live_transcription_mode"] = "SMART"
+                # Screen detail: MEDIUM (560 tok/frame) or HIGH (1120 tok/frame).
+                try:
+                    _sd = str(merged.get("screen_detail", "MEDIUM")).strip().upper()
+                    merged["screen_detail"] = _sd if _sd in ("MEDIUM", "HIGH") else "MEDIUM"
+                except Exception:
+                    merged["screen_detail"] = "MEDIUM"
                 # sanitize custom_words
                 try:
                     cw = merged.get("custom_words", [])
@@ -237,6 +329,12 @@ class ConfigManager:
                     merged["refine_prompts"] = {}
                     merged["refine_triggers"] = {}
                     merged["custom_actions"] = []
+                # Persist migrations (model upgrades, one-time thinking move)
+                # so they run once and later user choices are respected.
+                try:
+                    self.save_config(merged)
+                except Exception:
+                    pass
                 return merged
         except Exception as e:
             print(f"[Config] Load error: {e}, using defaults")
@@ -298,9 +396,8 @@ class ConfigManager:
             if cleaned and (len(cleaned) < 20 or len(cleaned) > 256):
                 print("[Config] Primary key rejected: bad length")
                 return
-            if cleaned and not cleaned.startswith("AIza"):
-                print("[Config] Primary key warning: unusual prefix (not AIza)")
-                # Still store — user may have new format — but warn only
+            # Key formats vary — store as-is. Validity is proven by the
+            # Setup > Test button and live connects, never by prefix.
             if cleaned:
                 keyring.set_password(APP_NAME, "PRIMARY_GEMINI_KEY", cleaned)
             else:
@@ -428,6 +525,8 @@ class ConfigManager:
         "gemini-3.1-flash-live",  # missing -preview suffix
         "gemini-2.5-flash-preview-native-audio-dialog",  # retired snapshot name
         "gemini-2.0-flash-lite", "gemini-2.0-flash",  # shut down 2026-06-01
+        "gemini-3-flash-live",  # never existed (missing version minor)
+        "gemini-2.5-flash-live",  # never existed (use native-audio-preview IDs)
     })
 
     @classmethod
@@ -441,26 +540,32 @@ class ConfigManager:
             return fallback
 
     def get_screen_fps(self) -> float:
-        """Live screen fps, clamped 0.2-2.0 (normal speed 1.5)."""
+        """Live screen max burst fps, clamped 0.2-15 (change-gated, see loop)."""
         try:
-            return max(0.2, min(2.0, float(self.config.get("screen_fps", 1.5))))
+            return max(0.2, min(15.0, float(self.config.get("screen_fps", 3.0))))
         except Exception:
-            return 1.5
+            return 3.0
+
+    # Model IDs that never supported thinking_config (plain live models).
+    # Config assembly must OMIT thinking_config for these (server rejects it).
+    NO_THINK_MODELS = frozenset({
+        "gemini-3.8-live",
+    })
 
     def get_companion_models(self) -> list[str]:
-        """Ordered Live models to try: primary, backup, then known-good fallbacks."""
-        primary = self._repair_live_model(self.config.get("companion_model"), "gemini-3-flash-live")
-        backup = self._repair_live_model(self.config.get("companion_backup_model"), "gemini-3.1-flash-live-preview")
+        """Ordered Live models: plain Live primary, Extended Thinking backup."""
+        primary = self._repair_live_model(self.config.get("companion_model"), "gemini-3.8-live")
+        backup = self._repair_live_model(self.config.get("companion_backup_model"), "gemini-3.8-live-extended-thinking")
         models = []
         for m in [primary, backup]:
             if m and m not in models:
                 models.append(m)
-        for fb in ["gemini-3.1-flash-live-preview", "gemini-2.5-flash-live", "gemini-live-2.5-flash-native-audio"]:
+        for fb in ["gemini-3.8-live", "gemini-3.8-live-extended-thinking", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-preview-12-2025"]:
             if fb not in models:
                 models.append(fb)
-            if len(models) >= 4:
+            if len(models) >= 5:
                 break
-        return models[:4]
+        return models[:5]
 
     def get_refine_models(self) -> list[str]:
         """Exactly: gemini-3.5-flash-lite then gemini-3.1-flash-lite."""
@@ -491,10 +596,10 @@ class ConfigManager:
 
     def get_verification_mode(self) -> str:
         try:
-            m = str(self.config.get("verification_mode", "verification_active")).strip().lower()
-            return m if m in ("verification_active", "auto_send") else "verification_active"
+            m = str(self.config.get("verification_mode", "auto_send")).strip().lower()
+            return m if m in ("verification_active", "auto_send") else "auto_send"
         except Exception:
-            return "verification_active"
+            return "auto_send"
 
     def set_verification_mode(self, mode: str):
         m = str(mode or "").strip().lower()
@@ -504,15 +609,42 @@ class ConfigManager:
     def get_tool_verification_flags(self) -> tuple[bool, bool]:
         """(requireVerification, autoSubmit) for typeTextAtCursor.
 
-        Verification Active (default): requireVerification=True, autoSubmit=False.
-        Auto-Send: requireVerification=False, autoSubmit=True.
+        Auto-Send (default, full authority): requireVerification=False, autoSubmit=True.
+        Verification Active: requireVerification=True, autoSubmit=False.
         """
-        if self.get_verification_mode() == "auto_send":
-            return False, True
-        return True, False
+        if self.get_verification_mode() == "verification_active":
+            return True, False
+        return False, True
 
     def get_live_thinking_level(self) -> str:
-        return "HIGH"  # locked
+        """Agent reasoning depth: LOW / MEDIUM / HIGH (default MEDIUM).
+
+        User-selectable in Settings > Agent Reasoning. Extended-thinking
+        models do not support MINIMAL.
+        """
+        try:
+            lv = str(self.config.get("live_thinking_level", "MEDIUM")).strip().upper()
+            return lv if lv in ("LOW", "MEDIUM", "HIGH") else "MEDIUM"
+        except Exception:
+            return "MEDIUM"
+
+    def set_live_thinking_level(self, level: str):
+        lv = str(level or "").strip().upper()
+        self.config["live_thinking_level"] = lv if lv in ("LOW", "MEDIUM", "HIGH") else "MEDIUM"
+        self.save_config()
+
+    def get_screen_detail(self) -> str:
+        """Screen frame detail: MEDIUM (560 tok/frame) or HIGH (1120 tok/frame)."""
+        try:
+            sd = str(self.config.get("screen_detail", "MEDIUM")).strip().upper()
+            return sd if sd in ("MEDIUM", "HIGH") else "MEDIUM"
+        except Exception:
+            return "MEDIUM"
+
+    def set_screen_detail(self, detail: str):
+        sd = str(detail or "").strip().upper()
+        self.config["screen_detail"] = sd if sd in ("MEDIUM", "HIGH") else "MEDIUM"
+        self.save_config()
 
     def get_live_transcription_mode(self) -> str:
         return "SMART"  # locked

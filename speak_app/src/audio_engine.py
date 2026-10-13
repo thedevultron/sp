@@ -31,6 +31,8 @@ class AudioEngine(QObject):
         self._play_stop = threading.Event()
         self._play_drop_warns = 0
         self._play_start_warned = False
+        # Monotonic timestamp of the last speaker write (feedback guard).
+        self._last_play_ts = 0.0
 
     def set_loop(self, loop):
         self._loop = loop
@@ -224,10 +226,28 @@ class AudioEngine(QObject):
             return False
 
     def _ensure_play_thread(self):
-        """Start the blocking-write worker once (idempotent)."""
+        """Idempotent worker starter, pinned to the current stream.
+
+        If a stale worker from a previous stream is still alive, it is asked
+        to stop and reaped (briefly) before a fresh worker starts — two
+        workers must never write to two devices at once (overlap = garble).
+        """
         try:
-            if self._play_thread is not None and self._play_thread.is_alive():
-                return
+            cur = self._output_stream
+            th = self._play_thread
+            if th is not None and th.is_alive():
+                try:
+                    pinned = getattr(th, "_pinned_stream", None)
+                except Exception:
+                    pinned = None
+                if pinned is cur:
+                    return
+                try:
+                    self._play_stop.set()
+                    th.join(timeout=1.0)
+                except Exception:
+                    pass
+                self._play_thread = None
             self._play_stop.clear()
             # Drain stale audio so a restart never blurts old speech
             try:
@@ -237,15 +257,32 @@ class AudioEngine(QObject):
                 pass
             except Exception:
                 pass
-            t = threading.Thread(target=self._play_worker, name="speak-playback", daemon=True)
+            t = threading.Thread(target=self._play_worker, name="speak-playback",
+                                 args=(cur,), daemon=True)
+            try:
+                t._pinned_stream = cur
+            except Exception:
+                pass
             self._play_thread = t
             t.start()
         except Exception as e:
             print(f"[AudioEngine] Play worker start error: {e}")
 
-    def _play_worker(self):
+    def _play_worker(self, stream=None):
         """Dedicated thread: blocking stream.write must never run on the asyncio loop."""
         while not self._play_stop.is_set():
+            try:
+                cur = self._output_stream
+                if stream is not None and cur is not None and cur is not stream:
+                    break  # restarted elsewhere; the fresh worker owns the new stream
+                if stream is None:
+                    stream = cur
+                    try:
+                        threading.current_thread()._pinned_stream = stream
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             try:
                 raw = self._play_queue.get(timeout=0.25)
             except queue.Empty:
@@ -253,7 +290,6 @@ class AudioEngine(QObject):
             except Exception:
                 continue
             try:
-                stream = self._output_stream
                 if stream is None:
                     continue
                 try:
@@ -262,6 +298,10 @@ class AudioEngine(QObject):
                 except Exception:
                     continue
                 stream.write(raw)
+                try:
+                    self._last_play_ts = time.monotonic()
+                except Exception:
+                    pass
                 try:
                     audio_data = np.frombuffer(raw, dtype=np.int16)
                     if len(audio_data) > 0:
@@ -325,6 +365,17 @@ class AudioEngine(QObject):
                 print("[AudioEngine] Playback queue full — dropped oldest chunk")
             self._play_drop_warns += 1
             return True
+        except Exception:
+            return False
+
+    def played_recently(self, window_s: float = 0.25) -> bool:
+        """True if speaker audio was written within the last window.
+
+        The companion uses this as a feedback guard: while our own reply is
+        audible, mic uplink of room tone would feed the model its own voice.
+        """
+        try:
+            return (time.monotonic() - float(getattr(self, "_last_play_ts", 0.0) or 0.0)) < max(0.05, float(window_s))
         except Exception:
             return False
 

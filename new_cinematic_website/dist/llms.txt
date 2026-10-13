@@ -1,0 +1,21 @@
+# Voxula AI
+
+> Voxula AI is a native Windows AI voice dictation and multimodal desktop copilot powered by Gemini Live. Free forever, bring your own Google AI Studio API key. Sub-second latency direct to cursor in any application.
+
+## Documentation & Guide
+
+- [Installation Guide](https://voxula-ai.web.app/#/docs#docs-start): Run SPEAK_Setup_v2.1.exe setup wizard, add an API key, press Ctrl + Space in any app.
+- [Live Voice Dictation](https://voxula-ai.web.app/#/docs#docs-dictation): Sub-second 16 kHz streaming transcription typed directly at the active cursor.
+- [Multimodal Companion](https://voxula-ai.web.app/#/docs#docs-companion): Real-time voice conversation with optional ~1 fps screen understanding and voice desktop control.
+- [Refine & Polish](https://voxula-ai.web.app/#/docs#docs-refine): Hands-free rewrite — say "refine", "polish", or "elaborate" to delete and retype cleaner text.
+- [Smart Context & Token Bar](https://voxula-ai.web.app/#/docs#docs-context): Live token gauge, Ctrl + Win to purge session history and tokens.
+- [Canvas and System Tray](https://voxula-ai.web.app/#/docs#docs-canvas): Screen annotation canvas and quiet background tray controls.
+- [Settings & Preferences](https://voxula-ai.web.app/#/docs#docs-settings): Setup, Guide, Preferences, and custom Refine action prompts.
+- [AI Engine Architecture](https://voxula-ai.web.app/#/docs#docs-models): What models run where, automated fallback, and self-repairing engine IDs.
+- [Security and Privacy](https://voxula-ai.web.app/#/docs#docs-security): Windows Credential Manager DPAPI encryption, direct AI stream, zero telemetry, no tracking.
+- [Troubleshooting](https://voxula-ai.web.app/#/docs#docs-troubleshooting): Microphone, audio device, quota, and connection fixes.
+
+## Downloads & Source
+
+- [Download Windows Installer (v2.1)](https://github.com/codedebuggalt/voxula_ai_installer/raw/main/SPEAK_Setup_v2.1.exe): Official setup wizard (64.3 MB, Windows 10/11 x64, DirectX 11+).
+- [GitHub Repository](https://github.com/codedebuggalt/voxula_ai_installer): Official source repository, installer releases, and release notes.

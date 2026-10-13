@@ -1,0 +1,21 @@
+# Voxula AI
+
+> Your Voice. Everywhere. A native Windows AI voice dictation and multimodal companion, powered by the AI Engine. Free forever — bring your own API key.
+
+## Docs
+
+- [Installation guide](https://voxula.ai/#/docs#docs-start): install the Windows app, add an API key, press Ctrl + Space in any app.
+- [Live voice dictation](https://voxula.ai/#/docs#docs-dictation): 16 kHz streaming transcription typed at your cursor.
+- [Multimodal companion](https://voxula.ai/#/docs#docs-companion): voice conversation with optional live screen share.
+- [Refine](https://voxula.ai/#/docs#docs-refine): say "refine", "polish", or "elaborate" to rewrite the session in place, plus custom actions.
+- [Token bar and purge](https://voxula.ai/#/docs#docs-context): live context meter, Ctrl + Win to reset.
+- [Canvas and tray](https://voxula.ai/#/docs#docs-canvas): screen ink layer and system-tray controls.
+- [Settings](https://voxula.ai/#/docs#docs-settings): Setup, Guide, Preferences, and Refine tabs.
+- [AI Engine](https://voxula.ai/#/docs#docs-models): dictation, companion, and refine engines with automatic fallback.
+- [Security and privacy](https://voxula.ai/#/docs#docs-security): Credential Manager keys, direct AI connections, no telemetry.
+- [Troubleshooting](https://voxula.ai/#/docs#docs-troubleshooting): mic, speaker, key, and connection fixes.
+
+## Download & Repository
+
+- [Download Installer (SPEAK_Setup_v2.1.exe)](https://github.com/codedebuggalt/voxula_ai_installer/raw/main/SPEAK_Setup_v2.1.exe): native x64, Windows 10 / 11, free forever.
+- [GitHub Repository](https://github.com/codedebuggalt/voxula_ai_installer): official repository and setup executable.

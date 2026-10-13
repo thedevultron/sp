@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://voxula-ai.web.app/sitemap.xml

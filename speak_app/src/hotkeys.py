@@ -5,20 +5,27 @@ from PySide6.QtCore import QObject, Signal, QTimer
 
 class GlobalHotkeyListener(QObject):
     """Background keyboard listener for global system shortcuts.
-    Fixed: debounce, WIN detection on Windows, thread-safe signals, no spam.
+    Production: debounce, WIN detection on Windows, thread-safe signals, no spam.
+    Shortcuts (final):
+      Ctrl+Space  dictation on/off
+      Ctrl+/      companion voice+screen (replaces Win+Shift to avoid Snip clash)
+      Ctrl+Win    purge + hard reset
+      Ctrl+Tab    new live session
+      Esc         stop live session only (app keeps running, tray stays)
     """
 
     sig_toggle_dictation = Signal()  # Ctrl + Space
-    sig_toggle_companion = Signal()  # Win + Shift
+    sig_toggle_companion = Signal()  # Ctrl + / (slash, next to shift row)
     sig_purge_reset = Signal()       # Ctrl + Win
     sig_new_session = Signal()       # Ctrl + Tab — spawn + switch live session
+    sig_stop_live = Signal()         # Esc — stop dictation/companion only
 
     def __init__(self):
         super().__init__()
         self._listener = None
         self._pressed = set()
         self._is_running = False
-        self._last_emit = {"dictation": 0, "companion": 0, "purge": 0, "new_session": 0}
+        self._last_emit = {"dictation": 0, "companion": 0, "purge": 0, "new_session": 0, "stop": 0}
         self._debounce_ms = 600  # prevent double-fire when holding keys
 
     def start(self):
@@ -34,7 +41,7 @@ class GlobalHotkeyListener(QObject):
             )
             self._listener.daemon = True
             self._listener.start()
-            print("[Hotkeys] Listener started")
+            print("[Hotkeys] Listener started (Ctrl+Space, Ctrl+/, Ctrl+Win, Ctrl+Tab, Esc-stop)")
         except Exception as e:
             print(f"[Hotkeys] Failed to start: {e}")
             self._is_running = False
@@ -70,9 +77,21 @@ class GlobalHotkeyListener(QObject):
                 return "TAB"
             if key == keyboard.Key.esc:
                 return "ESC"
+            # Slash key (front-slash, next to shift row): pynput reports char '/'
+            # or '?' when shift is held, or OEM VK 191 (US), 111 (numpad /).
+            # Normalize all to SLASH so Ctrl+/ works on US/UK/ISO layouts.
+            try:
+                vk = getattr(key, "vk", None)
+                if vk in (191, 111, 220, 226):
+                    return "SLASH"
+            except Exception:
+                pass
             # For char keys, normalize case
             if hasattr(key, 'char') and key.char:
-                return key.char.lower()
+                ch = key.char.lower()
+                if ch in ("/", "?"):
+                    return "SLASH"
+                return ch
             if hasattr(key, 'vk') and key.vk == 91:  # VK_LWIN
                 return "WIN"
             if hasattr(key, 'vk') and key.vk == 92:  # VK_RWIN
@@ -93,6 +112,20 @@ class GlobalHotkeyListener(QObject):
         try:
             norm = self._normalize(key)
         except Exception:
+            return
+        # Esc = stop-live: emit immediately (main ignores when idle).
+        # Never suppress — other apps keep their Esc behavior.
+        if norm == "ESC":
+            try:
+                self._pressed.add(norm)
+            except Exception:
+                pass
+            if self._should_emit("stop"):
+                print("[Hotkeys] Esc -> stop live")
+                try:
+                    self.sig_stop_live.emit()
+                except Exception as e:
+                    print(f"[Hotkeys] emit stop failed: {e}")
             return
         try:
             self._pressed.add(norm)
@@ -127,19 +160,20 @@ class GlobalHotkeyListener(QObject):
                 self._pressed.discard("SPACE")
             return
 
-        # 2. Win + Shift (Companion) — only without Ctrl (avoids Ctrl+Win purge misfire)
-        if "WIN" in self._pressed and "SHIFT" in self._pressed and "CTRL" not in self._pressed:
+        # 2. Ctrl + / (Companion) — replaces Win+Shift (Snip clash). Works with
+        # OEM VKs and '?' (Shift+/) so ISO/UK layouts still fire.
+        if "CTRL" in self._pressed and "SLASH" in self._pressed and "SPACE" not in self._pressed and "TAB" not in self._pressed:
             if self._should_emit("companion"):
-                print("[Hotkeys] Win+Shift -> companion")
+                print("[Hotkeys] Ctrl+/ -> companion")
                 try:
                     self.sig_toggle_companion.emit()
                 except Exception as e:
                     print(f"[Hotkeys] emit companion failed: {e}")
-                self._pressed.discard("SHIFT")
+                self._pressed.discard("SLASH")
             return
 
-        # 3. Ctrl + Win (Purge & Reset) — only without Shift (avoids Win+Shift misfire)
-        if "CTRL" in self._pressed and "WIN" in self._pressed and "SHIFT" not in self._pressed:
+        # 3. Ctrl + Win (Purge & Reset)
+        if "CTRL" in self._pressed and "WIN" in self._pressed:
             if self._should_emit("purge"):
                 print("[Hotkeys] Ctrl+Win -> purge")
                 try:
@@ -165,5 +199,9 @@ class GlobalHotkeyListener(QObject):
                 self._pressed.discard("SPACE")
             elif norm == "TAB":
                 self._pressed.discard("TAB")
+            elif norm == "SLASH":
+                self._pressed.discard("SLASH")
+            elif norm == "ESC":
+                self._pressed.discard("ESC")
         except Exception:
             pass
